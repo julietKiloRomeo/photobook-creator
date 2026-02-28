@@ -16,3 +16,11 @@ If this project has a test command, run it here. If no tests are configured yet,
 # Example (replace with real command)
 <test-command>
 ```
+
+## 3) Sync the skill folder
+
+Keep the OpenCode skill copy in sync when you change this repo. From the repo root:
+
+```bash
+rsync -a ./ /home/jkr/.config/opencode/skills/photo-book-creator/ --exclude .git/
+```
