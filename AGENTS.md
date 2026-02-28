@@ -1,5 +1,10 @@
 # Agent Workflow
 
+We work in tracked steps (`step-1.md`, `step-2.md`, etc.).
+- The current step is the smallest numbered step that is not marked "(Completed)".
+- Update the current step file as work is completed.
+- Mark completion by adding "(Completed)" to the step title.
+
 Before any commit or push, run these checks from the repo root.
 
 ## 1) Secrets scan (trufflehog via podman)
@@ -17,10 +22,3 @@ If this project has a test command, run it here. If no tests are configured yet,
 <test-command>
 ```
 
-## 3) Sync the skill folder
-
-Keep the OpenCode skill copy in sync when you change this repo. From the repo root:
-
-```bash
-rsync -a ./ /home/jkr/.config/opencode/skills/photo-book-creator/ --exclude .git/
-```

@@ -1,3 +1,11 @@
 .trufflehog/
 .photobook-temp/
 photobook-output/
+.cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+ui/node_modules/
+ui/dist/
+*.egg-info/
