@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 function App() {
@@ -12,49 +12,93 @@ function App() {
   const [clusterJob, setClusterJob] = useState(null)
   const [dedupeJob, setDedupeJob] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [activeStage, setActiveStage] = useState('intake')
+  const [selectedStackId, setSelectedStackId] = useState(null)
+  const fileInputRef = useRef(null)
+  const folderInputRef = useRef(null)
 
-  const statusText = useMemo(() => {
-    if (files.length === 0) {
-      return {
-        title: 'Waiting for photos',
-        subtitle: 'Drag files into the canvas.',
-      }
-    }
+  const stageMeta = useMemo(
+    () => ({
+      intake: {
+        title: 'Intake',
+        subtitle: 'Bring sources into the project without leaving the page.',
+      },
+      thumbnails: {
+        title: 'Thumbnails',
+        subtitle: 'Preview cached thumbnails and monitor pipeline progress.',
+      },
+      clusters: {
+        title: 'Clusters',
+        subtitle: 'Review event groupings and time ranges.',
+      },
+      duplicates: {
+        title: 'Duplicates',
+        subtitle: 'Scan stacks and confirm the best shot.',
+      },
+    }),
+    [],
+  )
 
-    if (jobStatus && jobStatus.status !== 'completed') {
-      const total = jobStatus.total || 0
-      const completed = jobStatus.completed || 0
-      return {
-        title: 'Building thumbnails',
-        subtitle: `Processed ${completed} of ${total} thumbnails.`,
-      }
-    }
+  const stages = useMemo(
+    () => [
+      { id: 'intake', label: 'Intake' },
+      { id: 'thumbnails', label: 'Thumbnails' },
+      { id: 'clusters', label: 'Clusters' },
+      { id: 'duplicates', label: 'Duplicates' },
+    ],
+    [],
+  )
 
-    if (clusterJob && clusterJob.status !== 'completed') {
-      const total = clusterJob.total || 0
-      const completed = clusterJob.completed || 0
-      return {
-        title: 'Clustering events',
-        subtitle: `Grouped ${completed} of ${total} photos.`,
-      }
+  const activeJob = useMemo(() => {
+    if (jobStatus && !['completed', 'failed'].includes(jobStatus.status)) {
+      return { title: 'Building thumbnails', stage: 'Thumbnails', job: jobStatus }
     }
+    if (clusterJob && !['completed', 'failed'].includes(clusterJob.status)) {
+      return { title: 'Clustering events', stage: 'Clusters', job: clusterJob }
+    }
+    if (dedupeJob && !['completed', 'failed'].includes(dedupeJob.status)) {
+      return { title: 'Detecting duplicates', stage: 'Duplicates', job: dedupeJob }
+    }
+    return null
+  }, [jobStatus, clusterJob, dedupeJob])
 
-    if (dedupeJob && dedupeJob.status !== 'completed') {
-      const total = dedupeJob.total || 0
-      const completed = dedupeJob.completed || 0
-      return {
-        title: 'Detecting duplicates',
-        subtitle: `Checked ${completed} of ${total} thumbnails.`,
-      }
+  const lastSummary = useMemo(() => {
+    if (duplicateResults.length > 0) {
+      return `Last run found ${duplicateResults.length} stack${
+        duplicateResults.length === 1 ? '' : 's'
+      }.`
     }
+    if (clusterResults.length > 0) {
+      return `Last run created ${clusterResults.length} cluster${
+        clusterResults.length === 1 ? '' : 's'
+      }.`
+    }
+    if (thumbResults.length > 0) {
+      return `Last run generated ${thumbResults.length} thumbnails.`
+    }
+    if (files.length > 0) {
+      return `${files.length} source${files.length === 1 ? '' : 's'} staged.`
+    }
+    return 'Ready when you are.'
+  }, [clusterResults.length, duplicateResults.length, files.length, thumbResults.length])
 
-    return {
-      title: `Loaded ${files.length} file${files.length === 1 ? '' : 's'}`,
-      subtitle: isUploading
-        ? 'Uploading originals and building thumbnails.'
-        : 'Sources are staged locally for the next step.',
+  const progressPercent = activeJob?.job?.total
+    ? Math.round((activeJob.job.completed / activeJob.job.total) * 100)
+    : 0
+
+  const progressDetail = activeJob
+    ? `${activeJob.job.completed ?? 0} of ${activeJob.job.total ?? 0} complete`
+    : lastSummary
+
+  useEffect(() => {
+    if (duplicateResults.length === 0) {
+      setSelectedStackId(null)
+      return
     }
-  }, [files.length, isUploading, jobStatus, clusterJob, dedupeJob])
+    if (!duplicateResults.some((group) => group.id === selectedStackId)) {
+      setSelectedStackId(duplicateResults[0].id)
+    }
+  }, [duplicateResults, selectedStackId])
 
   function isPhotoFile(entry) {
     if (entry.file.type && entry.file.type.startsWith('image/')) {
@@ -152,22 +196,14 @@ function App() {
     setIsDragging(false)
   }
 
-  async function handleDrop(event) {
-    event.preventDefault()
-    setIsDragging(false)
-    setErrorMessage('')
-    const droppedFiles = await collectFilesFromDataTransfer(event.dataTransfer)
-    if (droppedFiles.length === 0) {
-      return
-    }
-
+  function queueFiles(entries) {
     const nextFiles = []
     setFiles((prev) => {
       const existing = new Set(
         prev.map((entry) => `${entry.file.name}-${entry.file.lastModified}-${entry.path}`),
       )
       const next = [...prev]
-      droppedFiles.forEach((entry) => {
+      entries.forEach((entry) => {
         const key = `${entry.file.name}-${entry.file.lastModified}-${entry.path}`
         if (!existing.has(key)) {
           existing.add(key)
@@ -177,11 +213,13 @@ function App() {
       })
       return next
     })
+    return nextFiles
+  }
 
+  async function uploadFiles(nextFiles) {
     if (nextFiles.length === 0) {
       return
     }
-
     const formData = new FormData()
     nextFiles.forEach((entry) => {
       formData.append('files', entry.file, entry.file.name)
@@ -205,6 +243,29 @@ function App() {
     } finally {
       setIsUploading(false)
     }
+  }
+
+  async function handleDrop(event) {
+    event.preventDefault()
+    setIsDragging(false)
+    setErrorMessage('')
+    const droppedFiles = await collectFilesFromDataTransfer(event.dataTransfer)
+    if (droppedFiles.length === 0) {
+      return
+    }
+    const nextFiles = queueFiles(droppedFiles)
+    await uploadFiles(nextFiles)
+  }
+
+  async function handleFileSelection(fileList) {
+    const entries = Array.from(fileList ?? [])
+      .map((file) => ({ file, path: file.webkitRelativePath || file.name }))
+      .filter(isPhotoFile)
+    if (entries.length === 0) {
+      return
+    }
+    const nextFiles = queueFiles(entries)
+    await uploadFiles(nextFiles)
   }
 
   async function triggerCluster() {
@@ -334,211 +395,507 @@ function App() {
 
   return (
     <div className="app">
-      <header className="header">
-        <div>
-          <p className="eyebrow">Photo Book Creator</p>
-          <h1>Drag photos here to start a book</h1>
-          <p className="subtitle">
-            Drop folders or image files to create a new project. Originals stay
-            in place.
+      <header className="app-header">
+        <div className="brand">
+          <p className="brand-kicker">Photo Book Creator</p>
+          <h1 className="brand-title">Project: 2026 Annual</h1>
+          <p className="brand-subtitle">
+            A no-scroll workspace for intake, clustering, and duplicate review.
           </p>
         </div>
-        <div className="status-card">
-          <p className="status-label">Status</p>
-          <p className="status-title">{statusText.title}</p>
-          <p className="status-subtitle">{statusText.subtitle}</p>
+
+        <div className="stage-controls">
+          <div className="stage-tabs" role="tablist" aria-label="Workflow stages">
+            {stages.map((stage) => (
+              <button
+                key={stage.id}
+                type="button"
+                role="tab"
+                aria-selected={activeStage === stage.id}
+                className={activeStage === stage.id ? 'is-active' : ''}
+                onClick={() => setActiveStage(stage.id)}
+              >
+                {stage.label}
+              </button>
+            ))}
+          </div>
+          <select
+            className="stage-select"
+            value={activeStage}
+            onChange={(event) => setActiveStage(event.target.value)}
+            aria-label="Select a stage"
+          >
+            {stages.map((stage) => (
+              <option key={stage.id} value={stage.id}>
+                {stage.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="progress-banner">
+          <div>
+            <p className="progress-label">Global progress</p>
+            <p className="progress-title">{activeJob ? activeJob.title : 'No active jobs'}</p>
+            <p className="progress-subtitle">
+              {activeJob ? `Stage ${activeJob.stage} · ${progressPercent}%` : 'Idle'}
+            </p>
+            <p className="progress-detail">{progressDetail}</p>
+          </div>
+          <div className="progress-meter">
+            <span style={{ width: `${progressPercent}%` }} />
+          </div>
         </div>
       </header>
 
-      <section
-        className={`dropzone${isDragging ? ' is-dragging' : ''}`}
-        onDragOver={handleDragOver}
-        onDragEnter={handleDragEnter}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div className="dropzone-inner">
-          <div className="dropzone-icon" aria-hidden="true">
-            <span />
-          </div>
-          <div>
-            <p className="dropzone-title">Drop images or folders</p>
-            <p className="dropzone-subtitle">
-              This is a live canvas. Keep adding sources anytime.
-            </p>
-          </div>
-        </div>
-      </section>
-
-        <section className="file-list">
-        {files.length === 0 ? (
-          <div className="empty-list">
+      <div className="app-body">
+        <main className="stage-panel">
+          <div className="stage-header">
             <div>
-              <p className="empty-title">No files yet</p>
-              <p className="empty-subtitle">
-                Drag a few photos to see them listed here.
-              </p>
+              <p className="stage-kicker">Current stage</p>
+              <h2>{stageMeta[activeStage].title}</h2>
+              <p className="stage-subtitle">{stageMeta[activeStage].subtitle}</p>
+            </div>
+            <div className="stage-actions">
+              {activeStage === 'clusters' ? (
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={triggerCluster}
+                  disabled={
+                    thumbResults.length === 0 ||
+                    ['running', 'queued'].includes(clusterJob?.status)
+                  }
+                >
+                  Run clustering
+                </button>
+              ) : null}
+              {activeStage === 'duplicates' ? (
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={triggerDedupe}
+                  disabled={
+                    thumbResults.length === 0 ||
+                    ['running', 'queued'].includes(dedupeJob?.status)
+                  }
+                >
+                  Find duplicates
+                </button>
+              ) : null}
+              {activeStage === 'intake' ? (
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={() => setFiles([])}
+                  disabled={files.length === 0}
+                >
+                  Clear sources
+                </button>
+              ) : null}
             </div>
           </div>
-        ) : (
-          <div className="file-list-inner">
-            <div className="file-list-header">
-              <div>
-                <p className="file-list-title">Staged sources</p>
-                <p className="file-list-subtitle">
-                  These are the files captured from your drop.
-                </p>
-              </div>
-              <button type="button" className="clear-button" onClick={() => setFiles([])}>
-                Clear list
-              </button>
-            </div>
-            <ul className="file-items">
-              {files.map((entry) => (
-                <li
-                  key={`${entry.file.name}-${entry.file.lastModified}-${entry.path}`}
-                  className="file-item"
+
+          <div className={`stage-grid stage-grid--${activeStage}`}>
+            {activeStage === 'intake' ? (
+              <>
+                <section
+                  className={`stage-card dropzone-card${isDragging ? ' is-dragging' : ''}`}
+                  onDragOver={handleDragOver}
+                  onDragEnter={handleDragEnter}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
                 >
-                  <div>
-                    <p className="file-name">{entry.file.name}</p>
-                    <p className="file-meta">
-                      {entry.path} · {(entry.file.size / 1024).toFixed(1)} KB ·
-                      {entry.file.type || 'Unknown type'}
-                    </p>
+                  <div className="dropzone-content">
+                    <div className="dropzone-icon" aria-hidden="true">
+                      <span />
+                    </div>
+                    <div>
+                      <p className="card-title">Drop images or folders</p>
+                      <p className="card-subtitle">
+                        This canvas stays active while background jobs run.
+                      </p>
+                    </div>
                   </div>
+                </section>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Add sources</p>
+                      <p className="card-subtitle">Drop, pick a folder, or link a URL.</p>
+                    </div>
+                  </div>
+                  <div className="button-row">
+                    <button type="button" onClick={() => folderInputRef.current?.click()}>
+                      Add folder
+                    </button>
+                    <button type="button" onClick={() => fileInputRef.current?.click()}>
+                      Add files
+                    </button>
+                    <button type="button" className="secondary" disabled>
+                      Add URL
+                    </button>
+                  </div>
+                  <p className="helper-text">URL intake is queued for a later milestone.</p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    className="file-input"
+                    onChange={(event) => {
+                      handleFileSelection(event.target.files)
+                      event.target.value = ''
+                    }}
+                  />
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    webkitdirectory="true"
+                    className="file-input"
+                    onChange={(event) => {
+                      handleFileSelection(event.target.files)
+                      event.target.value = ''
+                    }}
+                  />
+                </section>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Staged sources</p>
+                      <p className="card-subtitle">Showing up to 6 entries.</p>
+                    </div>
+                  </div>
+                  {files.length === 0 ? (
+                    <div className="empty-state">
+                      <p className="empty-title">No sources yet</p>
+                      <p className="empty-subtitle">Drop images to start the pipeline.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <ul className="compact-list">
+                        {files.slice(0, 6).map((entry) => (
+                          <li
+                            key={`${entry.file.name}-${entry.file.lastModified}-${entry.path}`}
+                          >
+                            <div>
+                              <p className="item-title">{entry.file.name}</p>
+                              <p className="item-meta">
+                                {entry.path} · {(entry.file.size / 1024).toFixed(1)} KB
+                              </p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                      {files.length > 6 ? (
+                        <p className="more-count">+{files.length - 6} more</p>
+                      ) : null}
+                    </>
+                  )}
+                </section>
+              </>
+            ) : null}
+
+            {activeStage === 'thumbnails' ? (
+              <>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Thumbnail preview</p>
+                      <p className="card-subtitle">Latest cache snapshot (10 max).</p>
+                    </div>
+                  </div>
+                  {thumbResults.length === 0 ? (
+                    <div className="empty-state">
+                      <p className="empty-title">No thumbnails yet</p>
+                      <p className="empty-subtitle">Ingest photos to start rendering.</p>
+                    </div>
+                  ) : (
+                    <div className="thumb-grid">
+                      {thumbResults.slice(0, 10).map((entry) => (
+                        <div key={`${entry.photo_path}-${entry.size}`} className="thumb-tile">
+                          <span>{entry.photo_path.split('/').pop()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Status & cache</p>
+                      <p className="card-subtitle">Pipeline health and cache footprint.</p>
+                    </div>
+                  </div>
+                  <div className="stat-grid">
+                    <div>
+                      <p className="stat-label">Cache items</p>
+                      <p className="stat-value">{thumbResults.length}</p>
+                    </div>
+                    <div>
+                      <p className="stat-label">Upload state</p>
+                      <p className="stat-value">{isUploading ? 'Uploading' : 'Idle'}</p>
+                    </div>
+                  </div>
+                  {jobStatus && jobStatus.status !== 'completed' ? (
+                    <div className="progress-row">
+                      <div className="progress-bar">
+                        <span
+                          style={{
+                            width: `${
+                              jobStatus.total
+                                ? (jobStatus.completed / jobStatus.total) * 100
+                                : 0
+                            }%`,
+                          }}
+                        />
+                      </div>
+                      <p className="progress-text">
+                        {jobStatus.completed ?? 0} / {jobStatus.total ?? 0} complete
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="helper-text">No active thumbnail job.</p>
+                  )}
+                </section>
+              </>
+            ) : null}
+
+            {activeStage === 'clusters' ? (
+              <>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Cluster cards</p>
+                      <p className="card-subtitle">Showing up to 6 events.</p>
+                    </div>
+                  </div>
+                  {clusterResults.length === 0 ? (
+                    <div className="empty-state">
+                      <p className="empty-title">No clusters yet</p>
+                      <p className="empty-subtitle">Run clustering after thumbnails.</p>
+                    </div>
+                  ) : (
+                    <ul className="compact-list">
+                      {clusterResults.slice(0, 6).map((cluster) => (
+                        <li key={`${cluster.id}-${cluster.name}`}>
+                          <div>
+                            <p className="item-title">{cluster.name}</p>
+                            <p className="item-meta">
+                              {cluster.start_at} - {cluster.end_at} · {cluster.photos.length}{' '}
+                              photos
+                            </p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {clusterResults.length > 6 ? (
+                    <p className="more-count">+{clusterResults.length - 6} more</p>
+                  ) : null}
+                </section>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Summary</p>
+                      <p className="card-subtitle">High level readout for the run.</p>
+                    </div>
+                  </div>
+                  <div className="stat-grid">
+                    <div>
+                      <p className="stat-label">Clusters</p>
+                      <p className="stat-value">{clusterResults.length}</p>
+                    </div>
+                    <div>
+                      <p className="stat-label">Time range</p>
+                      <p className="stat-value">
+                        {clusterResults.length > 0
+                          ? `${clusterResults[0].start_at} - ${
+                              clusterResults[clusterResults.length - 1].end_at
+                            }`
+                          : '—'}
+                      </p>
+                    </div>
+                  </div>
+                  {clusterJob && clusterJob.status !== 'completed' ? (
+                    <p className="helper-text">Job status: {clusterJob.status}</p>
+                  ) : (
+                    <p className="helper-text">Last run ready to review.</p>
+                  )}
+                </section>
+              </>
+            ) : null}
+
+            {activeStage === 'duplicates' ? (
+              <>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Stacks</p>
+                      <p className="card-subtitle">Showing up to 6 stacks.</p>
+                    </div>
+                  </div>
+                  {duplicateResults.length === 0 ? (
+                    <div className="empty-state">
+                      <p className="empty-title">No duplicate stacks</p>
+                      <p className="empty-subtitle">Run duplicate detection to begin.</p>
+                    </div>
+                  ) : (
+                    <ul className="stack-list">
+                      {duplicateResults.slice(0, 6).map((group) => (
+                        <li key={group.id}>
+                          <button
+                            type="button"
+                            className={
+                              group.id === selectedStackId
+                                ? 'stack-button is-selected'
+                                : 'stack-button'
+                            }
+                            onClick={() => setSelectedStackId(group.id)}
+                          >
+                            <div>
+                              <p className="item-title">Stack {group.id}</p>
+                              <p className="item-meta">{group.photos.length} photos</p>
+                            </div>
+                            <span className="stack-count">{group.photos.length}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {duplicateResults.length > 6 ? (
+                    <p className="more-count">+{duplicateResults.length - 6} more</p>
+                  ) : null}
+                </section>
+                <section className="stage-card">
+                  <div className="card-header">
+                    <div>
+                      <p className="card-title">Selected stack</p>
+                      <p className="card-subtitle">Preview up to 4 frames.</p>
+                    </div>
+                  </div>
+                  {selectedStackId && duplicateResults.length > 0 ? (
+                    <>
+                      <div className="thumb-grid compact">
+                        {duplicateResults
+                          .find((group) => group.id === selectedStackId)
+                          ?.photos.slice(0, 4)
+                          .map((photo) => (
+                            <div key={photo.photo_path} className="thumb-tile">
+                              <span>{photo.photo_path.split('/').pop()}</span>
+                              {photo.is_best ? (
+                                <span className="best-badge">Best</span>
+                              ) : null}
+                            </div>
+                          ))}
+                      </div>
+                      <p className="helper-text">
+                        Best shot:{' '}
+                        {
+                          duplicateResults
+                            .find((group) => group.id === selectedStackId)
+                            ?.photos.find((photo) => photo.is_best)?.photo_path
+                            ?.split('/').pop() || '—'
+                        }
+                      </p>
+                    </>
+                  ) : (
+                    <div className="empty-state">
+                      <p className="empty-title">Pick a stack</p>
+                      <p className="empty-subtitle">Select a stack to inspect frames.</p>
+                    </div>
+                  )}
+                </section>
+              </>
+            ) : null}
+          </div>
+        </main>
+
+        <aside className="status-rail">
+          <div className="rail-card">
+            <div className="card-header">
+              <div>
+                <p className="card-title">Job queue</p>
+                <p className="card-subtitle">Queued, running, and completed.</p>
+              </div>
+            </div>
+            <ul className="job-list">
+              {[
+                { label: 'Thumbnails', stage: 'Intake', job: jobStatus },
+                { label: 'Clusters', stage: 'Clusters', job: clusterJob },
+                { label: 'Duplicates', stage: 'Duplicates', job: dedupeJob },
+              ].map((item) => (
+                <li key={item.label} className="job-item">
+                  <div>
+                    <p className="item-title">{item.label}</p>
+                    <p className="item-meta">{item.stage}</p>
+                  </div>
+                  <span className={`status-pill status-${item.job?.status ?? 'idle'}`}>
+                    {item.job?.status ?? 'idle'}
+                  </span>
                 </li>
               ))}
             </ul>
           </div>
-        )}
-      </section>
-
-      <section className="actions">
-        <div className="file-list-inner">
-          <div className="file-list-header">
-            <div>
-              <p className="file-list-title">Processing tools</p>
-              <p className="file-list-subtitle">
-                Trigger event clustering and duplicate detection after thumbnails.
-              </p>
-            </div>
-          </div>
-          <div className="action-buttons">
-            <button
-              type="button"
-              className="clear-button"
-              onClick={triggerCluster}
-              disabled={thumbResults.length === 0 || clusterJob?.status === 'running'}
-            >
-              Cluster events
-            </button>
-            <button
-              type="button"
-              className="clear-button"
-              onClick={triggerDedupe}
-              disabled={thumbResults.length === 0 || dedupeJob?.status === 'running'}
-            >
-              Find duplicates
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section className="thumb-list">
-        <div className="file-list-inner">
-          <div className="file-list-header">
-            <div>
-              <p className="file-list-title">Generated thumbnails</p>
-              <p className="file-list-subtitle">
-                {thumbResults.length === 0
-                  ? 'No thumbnails created yet.'
-                  : `Latest run created ${thumbResults.length} thumbnails.`}
-              </p>
-            </div>
-          </div>
-          {jobStatus && jobStatus.status !== 'completed' ? (
-            <div className="progress-row">
-              <div className="progress-bar">
-                <span
-                  style={{
-                    width: `${jobStatus.total ? (jobStatus.completed / jobStatus.total) * 100 : 0}%`,
-                  }}
-                />
+          <div className="rail-card">
+            <div className="card-header">
+              <div>
+                <p className="card-title">Recent outcomes</p>
+                <p className="card-subtitle">Last completed pipeline step.</p>
               </div>
-              <p className="progress-text">
-                {jobStatus.completed} / {jobStatus.total} thumbnails
-              </p>
             </div>
-          ) : null}
-          {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
-          <ul className="file-items">
-            {thumbResults.map((entry) => (
-              <li key={`${entry.photo_path}-${entry.size}`} className="file-item">
-                <div>
-                  <p className="file-name">{entry.photo_path.split('/').pop()}</p>
-                  <p className="file-meta">
-                    {entry.size}px · {entry.width}x{entry.height}
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
-
-      <section className="cluster-list">
-        <div className="file-list-inner">
-          <div className="file-list-header">
-            <div>
-              <p className="file-list-title">Event clusters</p>
-              <p className="file-list-subtitle">
-                {clusterResults.length === 0
-                  ? 'No clusters yet.'
-                  : `Created ${clusterResults.length} clusters.`}
-              </p>
+            <div className="stat-grid">
+              <div>
+                <p className="stat-label">Sources</p>
+                <p className="stat-value">{files.length}</p>
+              </div>
+              <div>
+                <p className="stat-label">Thumbnails</p>
+                <p className="stat-value">{thumbResults.length}</p>
+              </div>
+              <div>
+                <p className="stat-label">Clusters</p>
+                <p className="stat-value">{clusterResults.length}</p>
+              </div>
+              <div>
+                <p className="stat-label">Stacks</p>
+                <p className="stat-value">{duplicateResults.length}</p>
+              </div>
             </div>
           </div>
-          <ul className="file-items">
-            {clusterResults.map((cluster) => (
-              <li key={`${cluster.id}-${cluster.name}`} className="file-item">
-                <div>
-                  <p className="file-name">{cluster.name}</p>
-                  <p className="file-meta">
-                    {cluster.start_at} - {cluster.end_at} · {cluster.photos.length} photos
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
-
-      <section className="duplicate-list">
-        <div className="file-list-inner">
-          <div className="file-list-header">
-            <div>
-              <p className="file-list-title">Duplicate stacks</p>
-              <p className="file-list-subtitle">
-                {duplicateResults.length === 0
-                  ? 'No duplicate groups yet.'
-                  : `Found ${duplicateResults.length} stacks.`}
-              </p>
+          <div className="rail-card">
+            <div className="card-header">
+              <div>
+                <p className="card-title">System health</p>
+                <p className="card-subtitle">Background services and alerts.</p>
+              </div>
             </div>
-          </div>
-          <ul className="file-items">
-            {duplicateResults.map((group) => (
-              <li key={group.id} className="file-item">
+            {errorMessage ? (
+              <div className="alert">
+                <p className="alert-title">Action needed</p>
+                <p className="alert-text">{errorMessage}</p>
+              </div>
+            ) : (
+              <div className="health-grid">
                 <div>
-                  <p className="file-name">Stack {group.id}</p>
-                  <p className="file-meta">
-                    {group.photos.length} photos · Best: {group.photos.find((photo) => photo.is_best)?.photo_path.split('/').pop()}
-                  </p>
+                  <p className="stat-label">Thumbnail API</p>
+                  <p className="stat-value">Online</p>
                 </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
+                <div>
+                  <p className="stat-label">Cluster worker</p>
+                  <p className="stat-value">Standing by</p>
+                </div>
+                <div>
+                  <p className="stat-label">Dedupe worker</p>
+                  <p className="stat-value">Standing by</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
+      </div>
     </div>
   )
 }
