@@ -34,7 +34,11 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Photo Book Creator")
     executor = ThreadPoolExecutor(max_workers=2)
 
-    def process_thumbnails(job_id: str, sources: list[Path]) -> None:
+    def process_thumbnails(
+        job_id: str,
+        sources: list[Path],
+        cluster_job_id: str | None = None,
+    ) -> None:
         project_root = Path(".photobook-temp")
         cache_dir = project_root / "cache" / "thumbnails"
         db_path = project_root / "project.db"
@@ -52,8 +56,12 @@ def create_app() -> FastAPI:
                     completed += 1
                     update_job_progress(db_path, job_id, completed)
             update_job_status(db_path, job_id, "completed")
+            if cluster_job_id:
+                process_clusters(cluster_job_id)
         except Exception:
             update_job_status(db_path, job_id, "failed")
+            if cluster_job_id:
+                update_job_status(db_path, cluster_job_id, "failed")
 
     def process_clusters(job_id: str) -> None:
         db_path = Path(".photobook-temp") / "project.db"
@@ -102,12 +110,15 @@ def create_app() -> FastAPI:
         job_id = uuid.uuid4().hex
         total = len(stored_paths) * 2
         create_job(db_path, job_id, "thumbnails", total)
-        executor.submit(process_thumbnails, job_id, stored_paths)
+        cluster_job_id = uuid.uuid4().hex
+        create_job(db_path, cluster_job_id, "cluster", len(stored_paths))
+        executor.submit(process_thumbnails, job_id, stored_paths, cluster_job_id)
 
         return JSONResponse(
             {
                 "files": [str(path) for path in stored_paths],
                 "job_id": job_id,
+                "cluster_job_id": cluster_job_id,
             }
         )
 

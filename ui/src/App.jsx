@@ -84,7 +84,9 @@ function App() {
 
   const progressPercent = activeJob?.job?.total
     ? Math.round((activeJob.job.completed / activeJob.job.total) * 100)
-    : 0
+    : activeJob
+      ? 8
+      : 0
 
   const progressDetail = activeJob
     ? `${activeJob.job.completed ?? 0} of ${activeJob.job.total ?? 0} complete`
@@ -237,6 +239,14 @@ function App() {
       const data = await response.json()
       if (data.job_id) {
         setJobStatus({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
+      }
+      if (data.cluster_job_id) {
+        setClusterJob({
+          id: data.cluster_job_id,
+          status: 'queued',
+          total: data.files?.length ?? nextFiles.length,
+          completed: 0,
+        })
       }
     } catch (error) {
       setErrorMessage('Unable to reach the thumbnail service. Is it running?')
@@ -433,7 +443,7 @@ function App() {
           </select>
         </div>
 
-        <div className="progress-banner">
+        <div className={`progress-banner${activeJob ? ' is-active' : ''}`}>
           <div>
             <p className="progress-label">Global progress</p>
             <p className="progress-title">{activeJob ? activeJob.title : 'No active jobs'}</p>
@@ -517,6 +527,14 @@ function App() {
                       </p>
                     </div>
                   </div>
+                  {activeJob ? (
+                    <div className="inline-progress">
+                      <div className="progress-meter">
+                        <span style={{ width: `${progressPercent}%` }} />
+                      </div>
+                      <p className="progress-text">{progressDetail}</p>
+                    </div>
+                  ) : null}
                 </section>
                 <section className="stage-card">
                   <div className="card-header">
@@ -536,6 +554,9 @@ function App() {
                       Add URL
                     </button>
                   </div>
+                  <p className="helper-text">
+                    Thumbnails start automatically after ingest completes.
+                  </p>
                   <p className="helper-text">URL intake is queued for a later milestone.</p>
                   <input
                     ref={fileInputRef}

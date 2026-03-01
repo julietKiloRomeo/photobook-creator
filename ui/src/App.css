@@ -114,6 +114,10 @@
   box-shadow: 0 10px 18px rgba(184, 130, 99, 0.15);
 }
 
+.progress-banner.is-active {
+  animation: bannerPulse 2.6s ease-in-out infinite;
+}
+
 .progress-label {
   margin: 0;
   font-size: 0.7rem;
@@ -585,6 +589,17 @@
   text-align: right;
 }
 
+.inline-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+}
+
+.inline-progress .progress-meter {
+  height: 6px;
+}
+
 @media (max-width: 1100px) {
   .app-header {
     grid-template-columns: 1fr;
@@ -641,5 +656,17 @@
 
   .thumb-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@keyframes bannerPulse {
+  0% {
+    box-shadow: 0 0 0 rgba(184, 130, 99, 0.08);
+  }
+  50% {
+    box-shadow: 0 12px 24px rgba(30, 77, 70, 0.18);
+  }
+  100% {
+    box-shadow: 0 0 0 rgba(184, 130, 99, 0.08);
   }
 }

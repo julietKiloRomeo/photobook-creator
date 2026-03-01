@@ -51,13 +51,12 @@ def test_api_cluster_and_dedupe_flow(tmp_path: Path, monkeypatch) -> None:
         "/api/ingest", files=[("files", file) for file in upload_files]
     )
     assert response.status_code == 200
-    job_id = response.json()["job_id"]
+    payload = response.json()
+    job_id = payload["job_id"]
+    cluster_job_id = payload["cluster_job_id"]
     job = wait_for_job(client, job_id)
     assert job["status"] == "completed"
 
-    cluster_response = client.post("/api/cluster")
-    assert cluster_response.status_code == 200
-    cluster_job_id = cluster_response.json()["job_id"]
     cluster_job = wait_for_job(client, cluster_job_id)
     assert cluster_job["status"] == "completed"
 
