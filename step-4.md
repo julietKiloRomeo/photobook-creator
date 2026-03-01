@@ -1,4 +1,4 @@
-# Step 4 - Clustering + Duplicate Stacks
+# Step 4 - Clustering + Duplicate Stacks (Completed)
 
 **Goal:** Group photos into events and identify near-duplicates.
 

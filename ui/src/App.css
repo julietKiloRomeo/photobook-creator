@@ -130,6 +130,29 @@ h1 {
   min-height: 180px;
 }
 
+.actions {
+  min-height: 160px;
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.action-buttons .clear-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.cluster-list {
+  min-height: 180px;
+}
+
+.duplicate-list {
+  min-height: 180px;
+}
+
 .file-list-inner {
   border-radius: 24px;
   padding: 28px;
@@ -201,6 +224,37 @@ h1 {
   margin: 0 0 12px;
   color: #8a2f23;
   font-weight: 600;
+}
+
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 8px 0 16px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(46, 82, 74, 0.12);
+  overflow: hidden;
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(120deg, #2b5f53, #7da79b);
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  margin: 0;
+  color: #4a6a62;
+  font-size: 0.9rem;
+  min-width: 140px;
+  text-align: right;
 }
 
 .empty-list {

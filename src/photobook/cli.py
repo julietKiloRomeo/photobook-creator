@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate photo thumbnails")
     parser.add_argument(
         "paths",
-        nargs="+",
+        nargs="*",
         type=Path,
         help="Files or folders to thumbnail",
     )
@@ -78,6 +78,9 @@ def main() -> int:
         ]
         subprocess.run(command, check=True)
         return 0
+    if not args.paths:
+        print("No input paths provided. Pass files/folders or use --serve.")
+        return 1
     photos = iter_photo_paths(args.paths)
     if not photos:
         print("No supported images found.")

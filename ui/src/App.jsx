@@ -1,11 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 function App() {
   const [files, setFiles] = useState([])
   const [thumbResults, setThumbResults] = useState([])
+  const [clusterResults, setClusterResults] = useState([])
+  const [duplicateResults, setDuplicateResults] = useState([])
   const [isUploading, setIsUploading] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
+  const [jobStatus, setJobStatus] = useState(null)
+  const [clusterJob, setClusterJob] = useState(null)
+  const [dedupeJob, setDedupeJob] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
 
   const statusText = useMemo(() => {
@@ -16,13 +21,40 @@ function App() {
       }
     }
 
+    if (jobStatus && jobStatus.status !== 'completed') {
+      const total = jobStatus.total || 0
+      const completed = jobStatus.completed || 0
+      return {
+        title: 'Building thumbnails',
+        subtitle: `Processed ${completed} of ${total} thumbnails.`,
+      }
+    }
+
+    if (clusterJob && clusterJob.status !== 'completed') {
+      const total = clusterJob.total || 0
+      const completed = clusterJob.completed || 0
+      return {
+        title: 'Clustering events',
+        subtitle: `Grouped ${completed} of ${total} photos.`,
+      }
+    }
+
+    if (dedupeJob && dedupeJob.status !== 'completed') {
+      const total = dedupeJob.total || 0
+      const completed = dedupeJob.completed || 0
+      return {
+        title: 'Detecting duplicates',
+        subtitle: `Checked ${completed} of ${total} thumbnails.`,
+      }
+    }
+
     return {
       title: `Loaded ${files.length} file${files.length === 1 ? '' : 's'}`,
       subtitle: isUploading
         ? 'Uploading originals and building thumbnails.'
         : 'Sources are staged locally for the next step.',
     }
-  }, [files.length, isUploading])
+  }, [files.length, isUploading, jobStatus, clusterJob, dedupeJob])
 
   function isPhotoFile(entry) {
     if (entry.file.type && entry.file.type.startsWith('image/')) {
@@ -165,13 +197,140 @@ function App() {
         throw new Error('Upload failed')
       }
       const data = await response.json()
-      setThumbResults(data.thumbnails ?? [])
+      if (data.job_id) {
+        setJobStatus({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
+      }
     } catch (error) {
       setErrorMessage('Unable to reach the thumbnail service. Is it running?')
     } finally {
       setIsUploading(false)
     }
   }
+
+  async function triggerCluster() {
+    try {
+      setErrorMessage('')
+      const response = await fetch('/api/cluster', { method: 'POST' })
+      if (!response.ok) {
+        throw new Error('Cluster job failed')
+      }
+      const data = await response.json()
+      if (data.job_id) {
+        setClusterJob({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
+      }
+    } catch (error) {
+      setErrorMessage('Unable to start clustering.')
+    }
+  }
+
+  async function triggerDedupe() {
+    try {
+      setErrorMessage('')
+      const response = await fetch('/api/dedupe', { method: 'POST' })
+      if (!response.ok) {
+        throw new Error('Dedupe job failed')
+      }
+      const data = await response.json()
+      if (data.job_id) {
+        setDedupeJob({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
+      }
+    } catch (error) {
+      setErrorMessage('Unable to start duplicate detection.')
+    }
+  }
+
+  async function pollJob(jobId) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}`)
+      if (!response.ok) {
+        throw new Error('Job lookup failed')
+      }
+      const data = await response.json()
+      setJobStatus(data)
+      if (data.status === 'completed') {
+        const thumbResponse = await fetch('/api/thumbnails')
+        if (thumbResponse.ok) {
+          const thumbData = await thumbResponse.json()
+          setThumbResults(thumbData.items ?? [])
+        }
+      }
+    } catch (error) {
+      setErrorMessage('Unable to fetch thumbnail progress.')
+    }
+  }
+
+  async function pollCluster(jobId) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}`)
+      if (!response.ok) {
+        throw new Error('Cluster lookup failed')
+      }
+      const data = await response.json()
+      setClusterJob(data)
+      if (data.status === 'completed') {
+        const clusterResponse = await fetch('/api/clusters')
+        if (clusterResponse.ok) {
+          const clusterData = await clusterResponse.json()
+          setClusterResults(clusterData.items ?? [])
+        }
+      }
+    } catch (error) {
+      setErrorMessage('Unable to fetch cluster progress.')
+    }
+  }
+
+  async function pollDedupe(jobId) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}`)
+      if (!response.ok) {
+        throw new Error('Dedupe lookup failed')
+      }
+      const data = await response.json()
+      setDedupeJob(data)
+      if (data.status === 'completed') {
+        const dedupeResponse = await fetch('/api/duplicates')
+        if (dedupeResponse.ok) {
+          const dedupeData = await dedupeResponse.json()
+          setDuplicateResults(dedupeData.items ?? [])
+        }
+      }
+    } catch (error) {
+      setErrorMessage('Unable to fetch duplicate progress.')
+    }
+  }
+
+  useEffect(() => {
+    if (!jobStatus || jobStatus.status === 'completed' || jobStatus.status === 'failed') {
+      return undefined
+    }
+    pollJob(jobStatus.id)
+    const interval = setInterval(() => {
+      pollJob(jobStatus.id)
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [jobStatus?.id, jobStatus?.status])
+
+  useEffect(() => {
+    if (!clusterJob || clusterJob.status === 'completed' || clusterJob.status === 'failed') {
+      return undefined
+    }
+    pollCluster(clusterJob.id)
+    const interval = setInterval(() => {
+      pollCluster(clusterJob.id)
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [clusterJob?.id, clusterJob?.status])
+
+  useEffect(() => {
+    if (!dedupeJob || dedupeJob.status === 'completed' || dedupeJob.status === 'failed') {
+      return undefined
+    }
+    pollDedupe(dedupeJob.id)
+    const interval = setInterval(() => {
+      pollDedupe(dedupeJob.id)
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [dedupeJob?.id, dedupeJob?.status])
 
   return (
     <div className="app">
@@ -211,7 +370,7 @@ function App() {
         </div>
       </section>
 
-      <section className="file-list">
+        <section className="file-list">
         {files.length === 0 ? (
           <div className="empty-list">
             <div>
@@ -254,6 +413,37 @@ function App() {
         )}
       </section>
 
+      <section className="actions">
+        <div className="file-list-inner">
+          <div className="file-list-header">
+            <div>
+              <p className="file-list-title">Processing tools</p>
+              <p className="file-list-subtitle">
+                Trigger event clustering and duplicate detection after thumbnails.
+              </p>
+            </div>
+          </div>
+          <div className="action-buttons">
+            <button
+              type="button"
+              className="clear-button"
+              onClick={triggerCluster}
+              disabled={thumbResults.length === 0 || clusterJob?.status === 'running'}
+            >
+              Cluster events
+            </button>
+            <button
+              type="button"
+              className="clear-button"
+              onClick={triggerDedupe}
+              disabled={thumbResults.length === 0 || dedupeJob?.status === 'running'}
+            >
+              Find duplicates
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section className="thumb-list">
         <div className="file-list-inner">
           <div className="file-list-header">
@@ -266,6 +456,20 @@ function App() {
               </p>
             </div>
           </div>
+          {jobStatus && jobStatus.status !== 'completed' ? (
+            <div className="progress-row">
+              <div className="progress-bar">
+                <span
+                  style={{
+                    width: `${jobStatus.total ? (jobStatus.completed / jobStatus.total) * 100 : 0}%`,
+                  }}
+                />
+              </div>
+              <p className="progress-text">
+                {jobStatus.completed} / {jobStatus.total} thumbnails
+              </p>
+            </div>
+          ) : null}
           {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
           <ul className="file-items">
             {thumbResults.map((entry) => (
@@ -274,6 +478,60 @@ function App() {
                   <p className="file-name">{entry.photo_path.split('/').pop()}</p>
                   <p className="file-meta">
                     {entry.size}px · {entry.width}x{entry.height}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <section className="cluster-list">
+        <div className="file-list-inner">
+          <div className="file-list-header">
+            <div>
+              <p className="file-list-title">Event clusters</p>
+              <p className="file-list-subtitle">
+                {clusterResults.length === 0
+                  ? 'No clusters yet.'
+                  : `Created ${clusterResults.length} clusters.`}
+              </p>
+            </div>
+          </div>
+          <ul className="file-items">
+            {clusterResults.map((cluster) => (
+              <li key={`${cluster.id}-${cluster.name}`} className="file-item">
+                <div>
+                  <p className="file-name">{cluster.name}</p>
+                  <p className="file-meta">
+                    {cluster.start_at} - {cluster.end_at} · {cluster.photos.length} photos
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <section className="duplicate-list">
+        <div className="file-list-inner">
+          <div className="file-list-header">
+            <div>
+              <p className="file-list-title">Duplicate stacks</p>
+              <p className="file-list-subtitle">
+                {duplicateResults.length === 0
+                  ? 'No duplicate groups yet.'
+                  : `Found ${duplicateResults.length} stacks.`}
+              </p>
+            </div>
+          </div>
+          <ul className="file-items">
+            {duplicateResults.map((group) => (
+              <li key={group.id} className="file-item">
+                <div>
+                  <p className="file-name">Stack {group.id}</p>
+                  <p className="file-meta">
+                    {group.photos.length} photos · Best: {group.photos.find((photo) => photo.is_best)?.photo_path.split('/').pop()}
                   </p>
                 </div>
               </li>
