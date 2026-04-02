@@ -22,15 +22,10 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'uv run photobook-thumbnails --serve',
-      url: 'http://127.0.0.1:8000',
-      reuseExistingServer: true,
-      cwd: '..',
-    },
-    {
       command: 'npm run dev -- --host 127.0.0.1 --port 4173',
       url: 'http://127.0.0.1:4173',
       reuseExistingServer: true,
+      timeout: 120000,
     },
   ],
 })

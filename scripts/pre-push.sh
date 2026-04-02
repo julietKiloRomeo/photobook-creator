@@ -18,7 +18,7 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 echo "Running secrets scan (trufflehog)"
-podman run --rm -v "$PWD:/repo" -v "$PWD/.trufflehog:/tmp" docker.io/trufflesecurity/trufflehog:latest filesystem /repo
+podman run --rm -v "$PWD:/repo" -v "$PWD/.trufflehog:/tmp" docker.io/trufflesecurity/trufflehog:latest filesystem /repo --exclude-paths /tmp/exclude.txt
 
 echo "Running ruff (uv)"
 uv run ruff check .

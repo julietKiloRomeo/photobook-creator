@@ -226,20 +226,22 @@ async function selectStage(page, stageKey) {
     build: 'Build',
     export: 'Export',
   }
-  const tabs = page.locator('.stage-tabs')
-  if (await tabs.isVisible()) {
-    await page.locator('.stage-tabs button').filter({ hasText: labels[stageKey] }).click()
-    await expect(page.locator('.stage-header h2')).toHaveText(labels[stageKey])
+  const stageHeader = page.getByRole('heading', { level: 2 })
+  const stageTabs = page.locator('button').filter({ hasText: labels[stageKey] })
+  if (await stageTabs.first().isVisible()) {
+    await stageTabs.first().click()
+    await expect(stageHeader).toHaveText(labels[stageKey])
     return
   }
-  await page.locator('.stage-select').selectOption(stageKey)
-  await expect(page.locator('.stage-header h2')).toHaveText(labels[stageKey])
+  const stageSelect = page.locator('select')
+  await stageSelect.selectOption(stageKey)
+  await expect(stageHeader).toHaveText(labels[stageKey])
 }
 
 async function closeDetailsDrawer(page) {
-  const drawer = page.locator('.details-drawer.is-open')
-  if (await drawer.isVisible()) {
-    await page.locator('.drawer-close').click()
+  const detailsButton = page.getByRole('button', { name: 'Details' })
+  if (await detailsButton.isVisible()) {
+    await detailsButton.click()
   }
 }
 
@@ -250,10 +252,8 @@ test('auto thumbnails and clustering show progress', async ({ page }) => {
   await attachUploads(page)
   await ingestRequest
 
-  await expect(page.locator('.progress-title')).toHaveText('Building thumbnails', {
-    timeout: 10000,
-  })
-  await expect(page.locator('.progress-detail')).toContainText('complete')
+  await expect(page.getByText('Building thumbnails')).toBeVisible({ timeout: 10000 })
+  await expect(page.locator('p').filter({ hasText: 'of 4 complete' }).first()).toBeVisible()
 }, { timeout: 15000 })
 
 for (const state of states) {

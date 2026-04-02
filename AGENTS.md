@@ -42,6 +42,8 @@ Each agent only pulls GitHub issues labeled for its role and assigned to it.
 - `.agents/skills/frontend-design`
 - `.agents/skills/webapp-testing`
 - `.agents/skills/github-ops`
+- `.agents/skills/using-git-worktrees`
+- `.agents/skills/dispatching-parallel-agents`
 
 ## Python Environment Policy
 
