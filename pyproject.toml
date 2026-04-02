@@ -5,14 +5,18 @@ description = "Local photo book creation tools"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.110.0",
+  "open-clip-torch>=2.24.0",
   "Pillow>=10.0.0",
   "python-multipart>=0.0.9",
+  "torch>=2.2.0",
+  "torchvision>=0.17.0",
   "uvicorn>=0.27.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=7.4.0",
+  "ruff>=0.12.5",
   "httpx>=0.27.0",
 ]
 
@@ -32,6 +36,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "gpu: requires CUDA-capable GPU",
+]
 
 [tool.pyright]
 extraPaths = ["src"]

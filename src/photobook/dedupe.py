@@ -11,6 +11,7 @@ from photobook.project_store import (
     add_duplicate_photos,
     clear_duplicate_groups,
     create_duplicate_group,
+    list_photo_scores_map,
     list_thumbnail_paths,
 )
 
@@ -59,6 +60,7 @@ def hamming_distance(left: int, right: int) -> int:
 
 def find_duplicate_groups(db_path: Path, size: int = 256, threshold: int = 6) -> int:
     thumbnail_paths = list_thumbnail_paths(db_path, size)
+    score_map = list_photo_scores_map(db_path)
     candidates = [
         DuplicateCandidate(
             photo_path=path,
@@ -84,7 +86,14 @@ def find_duplicate_groups(db_path: Path, size: int = 256, threshold: int = 6) ->
         if len(group_members) <= 1:
             continue
         group_id = create_duplicate_group(db_path)
-        best = min(group_members, key=lambda member: member.photo_path)
+        best = max(
+            group_members,
+            key=lambda member: (
+                score_map.get(member.photo_path, float("-inf")),
+                -hamming_distance(candidate.fingerprint, member.fingerprint),
+                member.photo_path,
+            ),
+        )
         add_duplicate_photos(
             db_path,
             group_id,
