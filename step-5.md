@@ -1,4 +1,4 @@
-# Step 5 - Aesthetic Scoring
+# Step 5 - Aesthetic Scoring (Completed)
 
 **Goal:** Rank photos using a model-based aesthetic score.
 
