@@ -11,6 +11,8 @@ Photo Book Creator is a local app that ingests photos, generates thumbnails for 
 - Python 3.10+
 - Node 18+
 - uv (Python package manager)
+- gh (GitHub CLI)
+- podman (for trufflehog secrets scan)
 
 ## Install
 
@@ -44,6 +46,20 @@ The UI proxies `/api` to the local API server.
 
 ```bash
 uv run --extra dev pytest
+```
+
+## Pre-Push Checks
+
+This repo ships a pre-push hook that runs:
+
+- trufflehog secrets scan (via podman)
+- ruff
+- UI lint
+
+To install the hook:
+
+```bash
+ln -sf ../../scripts/pre-push.sh .git/hooks/pre-push
 ```
 
 ## CLI Thumbnail Pipeline

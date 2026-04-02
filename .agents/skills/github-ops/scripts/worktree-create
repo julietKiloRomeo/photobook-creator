@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -lt 3 ]; then
+  echo "Usage: worktree-create <issue-id> <role> <short-slug>" >&2
+  echo "Example: worktree-create 123 dev intake-flow" >&2
+  exit 1
+fi
+
+issue_id="$1"
+role="$2"
+slug="$3"
+
+branch="role/${issue_id}-${slug}"
+worktree_path="../photo-book-creator-wt/${role}/${issue_id}-${slug}"
+
+git fetch origin main
+git worktree add -b "$branch" "$worktree_path" main
+
+echo "Created worktree: ${worktree_path}"
+echo "Branch: ${branch}"

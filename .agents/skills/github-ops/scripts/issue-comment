@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+  echo "Usage: issue-comment <issue-number> <comment>" >&2
+  exit 1
+fi
+
+issue_number="$1"
+shift
+comment="$*"
+
+gh issue comment "$issue_number" --body "$comment"
