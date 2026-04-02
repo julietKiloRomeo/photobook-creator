@@ -137,7 +137,7 @@ def create_app() -> FastAPI:
         update_job_status(db_path, job_id, "running")
         try:
             total = len(list_photo_paths(db_path))
-            cluster_count = cluster_photos_by_time(db_path)
+            cluster_photos_by_time(db_path)
             update_job_progress(db_path, job_id, total)
             update_job_status(db_path, job_id, "completed")
         except Exception:

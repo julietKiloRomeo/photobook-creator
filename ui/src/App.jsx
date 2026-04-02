@@ -281,25 +281,6 @@ function App() {
     return map
   }, [thumbResults])
 
-  const selectedStackBestThumbnail = useMemo(() => {
-    if (!selectedStack) {
-      return null
-    }
-    const overridePath = bestOverrides[selectedStack.id]
-    const bestPhoto = overridePath
-      ? selectedStack.photos?.find((photo) => photo.photo_path === overridePath)
-      : selectedStack.photos?.find((photo) => photo.is_best) ?? selectedStack.photos?.[0]
-    if (!bestPhoto) {
-      return null
-    }
-    return (
-      bestPhoto.thumb_path ||
-      thumbPathMap.get(bestPhoto.photo_path) ||
-      bestPhoto.path ||
-      null
-    )
-  }, [selectedStack, bestOverrides, thumbPathMap])
-
   useEffect(() => {
     if (duplicateResults.length === 0) {
       setSelectedStackId(null)
@@ -335,7 +316,7 @@ function App() {
       }
       const data = await response.json()
       setThumbResults(data.items ?? [])
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to load thumbnails.')
     }
   }
@@ -348,7 +329,7 @@ function App() {
       }
       const data = await response.json()
       setDuplicateResults(data.items ?? [])
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to load duplicate stacks.')
     }
   }
@@ -367,7 +348,7 @@ function App() {
         throw new Error('Ignore stack failed')
       }
       await fetchDuplicates()
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to ignore stack.')
     }
   }
@@ -386,7 +367,7 @@ function App() {
         throw new Error('Ignore photo failed')
       }
       await fetchDuplicates()
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to ignore photo.')
     }
   }
@@ -406,7 +387,7 @@ function App() {
       }
       await fetchDuplicates()
       await fetchThumbnails()
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to delete stack photos.')
     }
   }
@@ -426,7 +407,7 @@ function App() {
       }
       await fetchDuplicates()
       await fetchThumbnails()
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to delete photo.')
     }
   }
@@ -445,7 +426,7 @@ function App() {
         throw new Error('Resolve stack failed')
       }
       await fetchDuplicates()
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to update stack status.')
     }
   }
@@ -641,11 +622,11 @@ function App() {
           total: prev?.total ?? nextFiles.length,
           completed,
         }))
-      } catch (error) {
+      } catch (err) {
         if (attempt < 2) {
           return uploadBatch(batch, attempt + 1)
         }
-        throw error
+        throw err
       } finally {
         window.clearTimeout(timeoutId)
       }
@@ -656,7 +637,7 @@ function App() {
       for (const batch of batches) {
         try {
           await uploadBatch(batch)
-        } catch (error) {
+        } catch {
           failedCount += batch.length
           completed += batch.length
           setUploadProgress((prev) => ({
@@ -715,7 +696,7 @@ function App() {
       if (data.job_id) {
         setClusterJob({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to start clustering.')
     }
   }
@@ -731,7 +712,7 @@ function App() {
       if (data.job_id) {
         setDedupeJob({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to start duplicate detection.')
     }
   }
@@ -747,7 +728,7 @@ function App() {
       if (data.job_id) {
         setScoreJob({ id: data.job_id, status: 'queued', total: 0, completed: 0 })
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to start aesthetic scoring.')
     }
   }
@@ -760,7 +741,7 @@ function App() {
       }
       const data = await response.json()
       setChapters(data.items ?? [])
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to load chapters.')
     }
   }
@@ -818,7 +799,7 @@ function App() {
       setNewChapterName('')
       setPageCountDraft('')
       await fetchChapters()
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to create chapter.')
     }
   }
@@ -846,7 +827,7 @@ function App() {
       setPageCountDraft('')
       await fetchChapters()
       await fetchPages(selectedChapterId)
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to update page count.')
     }
   }
@@ -874,7 +855,7 @@ function App() {
         throw new Error('Create item failed')
       }
       await fetchPageItems(selectedPageId)
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to add text element.')
     }
   }
@@ -960,7 +941,7 @@ function App() {
         throw new Error('Create item failed')
       }
       await fetchPageItems(selectedPageId)
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to add photo.')
     }
   }
@@ -979,7 +960,7 @@ function App() {
       }
       const data = await response.json()
       setExportPayload(data)
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to export book data.')
     } finally {
       setIsExporting(false)
@@ -1017,7 +998,7 @@ function App() {
         throw new Error('Update item failed')
       }
       await fetchPageItems(selectedPageId)
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to update layout item.')
     }
   }
@@ -1053,7 +1034,7 @@ function App() {
         await fetchThumbnails()
         setActiveStage('clean')
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to fetch thumbnail progress.')
     }
   }
@@ -1073,7 +1054,7 @@ function App() {
           setClusterResults(clusterData.items ?? [])
         }
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to fetch cluster progress.')
     }
   }
@@ -1089,7 +1070,7 @@ function App() {
       if (data.status === 'completed') {
         await fetchDuplicates()
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to fetch duplicate progress.')
     }
   }
@@ -1109,7 +1090,7 @@ function App() {
           setScoreResults(scoreData.items ?? [])
         }
       }
-    } catch (error) {
+    } catch {
       setErrorMessage('Unable to fetch scoring progress.')
     }
   }

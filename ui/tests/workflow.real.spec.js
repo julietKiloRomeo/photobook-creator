@@ -1,7 +1,9 @@
-import { expect, test } from '@playwright/test'
+import { Buffer } from 'node:buffer'
 import fs from 'node:fs'
 import path from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { expect, test } from '@playwright/test'
 
 const jpegFixture = Buffer.from(
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAQABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAhEAACAQQCAgMAAAAAAAAAAAABAgMABAURBhIhQVEiMf/EABUBAQEAAAAAAAAAAAAAAAAAAAID/8QAGxEAAgMAAwAAAAAAAAAAAAAAAAECBBEhMRL/2gAMAwEAAhEDEQA/ANGLQeYYqaWcQ2XMamvV2U6tswKqKPH0t5rtTUyuwksdUwxKwXHSHD9cOe6mmtF4aZzyuOCtWjlNjYQF4fujx8etkA6eNkp9TNE9Q6ZxSYQmcp7b4pG6C2mFJf/2Q==',
