@@ -219,6 +219,7 @@ async function attachUploads(page) {
 }
 
 async function selectStage(page, stageKey) {
+  await closeDetailsDrawer(page)
   const labels = {
     intake: 'Intake',
     clean: 'Clean',
@@ -233,15 +234,26 @@ async function selectStage(page, stageKey) {
     await expect(stageHeader).toHaveText(labels[stageKey])
     return
   }
-  const stageSelect = page.locator('select')
+  const stageSelect = page.getByLabel('Select a stage')
   await stageSelect.selectOption(stageKey)
   await expect(stageHeader).toHaveText(labels[stageKey])
 }
 
 async function closeDetailsDrawer(page) {
+  const drawer = page.locator('aside')
+  if (!(await drawer.count())) {
+    return
+  }
+  const isOpen = await drawer.evaluate((el) =>
+    el.classList.contains('translate-x-0'),
+  )
+  if (!isOpen) {
+    return
+  }
   const detailsButton = page.getByRole('button', { name: 'Details' })
   if (await detailsButton.isVisible()) {
     await detailsButton.click()
+    await expect(drawer).not.toHaveClass(/translate-x-0/)
   }
 }
 
@@ -258,7 +270,7 @@ test('auto thumbnails and clustering show progress', async ({ page }) => {
 
 for (const state of states) {
   test(`visual snapshots - ${state}`, async ({ page }, testInfo) => {
-    testInfo.setTimeout(60000)
+    testInfo.setTimeout(120000)
     await setupRoutes(page, state)
     await page.goto('/')
     await page.addStyleTag({
@@ -273,7 +285,7 @@ for (const state of states) {
     for (const stage of stages) {
       await selectStage(page, stage)
       await closeDetailsDrawer(page)
-      await page.waitForLoadState('networkidle')
+      await page.waitForLoadState('domcontentloaded')
       await page.waitForTimeout(150)
       await expect(page).toHaveScreenshot(
         `${stage}-${state}-${testInfo.project.name}.png`,

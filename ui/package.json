@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "screenshots": "node scripts/capture-screenshots.mjs",
     "test": "playwright test",
     "test:ui": "playwright test"
   },
