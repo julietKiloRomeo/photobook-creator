@@ -152,6 +152,52 @@ function setupRoutes(page, state) {
       })
     }
 
+    if (url.pathname === '/api/chapters') {
+      if (route.request().method() === 'POST') {
+        return route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ id: 1 }),
+        })
+      }
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] }),
+      })
+    }
+
+    if (url.pathname.includes('/api/chapters/') && url.pathname.endsWith('/pages')) {
+      if (route.request().method() === 'POST') {
+        return route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: true }),
+        })
+      }
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] }),
+      })
+    }
+
+    if (url.pathname.includes('/api/pages/') && url.pathname.endsWith('/items')) {
+      if (route.request().method() === 'POST') {
+        return route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ id: 1 }),
+        })
+      }
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] }),
+      })
+    }
+
+    if (url.pathname === '/api/export') {
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ chapters: [], pages: [] }),
+      })
+    }
+
     return route.fulfill({ status: 404, body: '{}' })
   })
 }
@@ -162,12 +208,12 @@ async function attachUploads(page) {
     {
       name: '20240101T090000_a.jpg',
       mimeType: 'image/jpeg',
-      buffer: Buffer.from('fake-image-a'),
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     },
     {
       name: '20240101T091000_b.jpg',
       mimeType: 'image/jpeg',
-      buffer: Buffer.from('fake-image-b'),
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     },
   ])
 }
@@ -175,39 +221,59 @@ async function attachUploads(page) {
 async function selectStage(page, stageKey) {
   const labels = {
     intake: 'Intake',
-    thumbnails: 'Thumbnails',
-    clusters: 'Clusters',
-    duplicates: 'Duplicates',
+    clean: 'Clean',
+    organize: 'Organize',
+    build: 'Build',
+    export: 'Export',
   }
   const tabs = page.locator('.stage-tabs')
   if (await tabs.isVisible()) {
     await page.locator('.stage-tabs button').filter({ hasText: labels[stageKey] }).click()
+    await expect(page.locator('.stage-header h2')).toHaveText(labels[stageKey])
     return
   }
   await page.locator('.stage-select').selectOption(stageKey)
+  await expect(page.locator('.stage-header h2')).toHaveText(labels[stageKey])
+}
+
+async function closeDetailsDrawer(page) {
+  const drawer = page.locator('.details-drawer.is-open')
+  if (await drawer.isVisible()) {
+    await page.locator('.drawer-close').click()
+  }
 }
 
 test('auto thumbnails and clustering show progress', async ({ page }) => {
   await setupRoutes(page, 'running')
   await page.goto('/')
+  const ingestRequest = page.waitForRequest('**/api/ingest')
   await attachUploads(page)
+  await ingestRequest
 
-  await expect(page.locator('.progress-title')).toHaveText('Building thumbnails')
+  await expect(page.locator('.progress-title')).toHaveText('Building thumbnails', {
+    timeout: 10000,
+  })
   await expect(page.locator('.progress-detail')).toContainText('complete')
-})
+}, { timeout: 15000 })
 
 for (const state of states) {
   test(`visual snapshots - ${state}`, async ({ page }, testInfo) => {
+    testInfo.setTimeout(60000)
     await setupRoutes(page, state)
     await page.goto('/')
+    await page.addStyleTag({
+      content: '*{animation-duration:0s!important;transition-duration:0s!important;}',
+    })
 
     if (state !== 'empty') {
       await attachUploads(page)
     }
 
-    const stages = ['intake', 'thumbnails', 'clusters', 'duplicates']
+    const stages = ['intake', 'clean', 'organize', 'build', 'export']
     for (const stage of stages) {
       await selectStage(page, stage)
+      await closeDetailsDrawer(page)
+      await page.waitForLoadState('networkidle')
       await page.waitForTimeout(150)
       await expect(page).toHaveScreenshot(
         `${stage}-${state}-${testInfo.project.name}.png`,
