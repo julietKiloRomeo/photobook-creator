@@ -9,4 +9,9 @@ __pycache__/
 .worktrees/
 ui/node_modules/
 ui/dist/
+node_modules/
+playwright-report/
+test-results/
 *.egg-info/
+
+!.trufflehog/exclude.txt

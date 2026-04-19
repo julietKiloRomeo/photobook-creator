@@ -1,31 +1,26 @@
-# Photo Book Creator
+# Photo Book Creator (Restart)
 
-Local-first tooling to ingest photos, generate thumbnails, and manage project data for clustering, dedupe, scoring, and layout.
+This branch is a clean restart.
 
-## Current Status
+- Frontend baseline: `darkroom_v2.html`.
+- Persistent storage: SQLite only.
+- No persisted local media files (photos/thumbnails) are written by the backend.
+- Agent setup is kept in `AGENTS.md`, `.agents/`, and `.codex/`.
+- Darkroom UI assets are split into `frontend/styles/darkroom.css` and `frontend/js/*`.
 
-- CLI supports thumbnail generation with SQLite metadata storage.
-- FastAPI backend supports ingest, background jobs, and chapter/page management.
-- React/Vite UI in `ui/` provides a guided, stage-based workflow.
+## Product Direction
 
-## User Stories
+The workflow remains:
 
-1. Intake and sources: drag/drop folders, single photos, and URLs without reorganizing originals.
-2. Non-destructive processing: originals stay in place; background jobs run with progress.
-3. Cross-source clustering: events/themes grouped across devices and folders.
-4. Duplicate stacks and best shots: review stacks and mark best shots quickly.
-5. Staging area: pull photos across themes while building pages.
-6. Book structure and pages: create chapters, reorder, set page counts, and place photos.
-7. Reuse and text: reuse photos and add text elements to pages.
-8. Preview and export: export a structured list of photos/text by page.
+1. Intake references (paths/URIs + metadata)
+2. Organize into chapters and pages
+3. Place photo/text items on pages
+4. Export structured JSON
 
 ## Requirements
 
 - Python 3.10+
-- Node 18+
-- uv (Python package manager)
-- gh (GitHub CLI)
-- podman (for trufflehog secrets scan)
+- `uv`
 
 ## Install
 
@@ -33,110 +28,82 @@ Local-first tooling to ingest photos, generate thumbnails, and manage project da
 uv sync --extra dev
 ```
 
-```bash
-cd ui
-npm install
-```
-
-## Run the API
+Generate the vacation fixture pack (20 AI images + manifest) via OpenAI image generation using llm-gateway credentials from `~/.codex/config.toml` (`model_providers.topsoe`):
 
 ```bash
-uv run photobook-thumbnails --serve
+uv run scripts/generate_vacation_fixture_pack.py
 ```
 
-API runs on `http://127.0.0.1:8000`.
-
-Local data lives under `.photobook-temp/` (SQLite DB, uploads, thumbnail cache, model cache).
-
-## Run the UI
+Optional overrides:
 
 ```bash
-cd ui
-npm run dev
+uv run scripts/generate_vacation_fixture_pack.py --model gpt-image-1.5 --size 1024x1024 --quality low
 ```
 
-The UI proxies `/api` to the local API server.
-
-## CLI Thumbnail Pipeline
-
-Generate thumbnails and persist metadata in SQLite:
+## Run API + Darkroom Shell
 
 ```bash
-uv run photobook-thumbnails path/to/photos --cache-dir .cache/thumbnails --sizes 256 1024
+uv run photobook-api --host 127.0.0.1 --port 8000
 ```
 
-## API Endpoints (Current)
+- `GET /` serves `darkroom_v2.html`.
+- Default DB path: `.photobook-temp/project.db`
+- Override DB path with `PHOTOBOOK_DB_PATH=/path/to/project.db`.
 
-- `POST /api/ingest` upload photos, enqueue thumbnail + cluster jobs
-- `GET /api/thumbnail?path=...` return a cached thumbnail
-- `GET /api/thumbnails` list thumbnail records
-- `GET /api/clusters` list time-based clusters
-- `GET /api/duplicates` list duplicate groups
-- `POST /api/duplicates/ignore` ignore a duplicate group
-- `POST /api/duplicates/ignore-photo` ignore a single photo
-- `POST /api/duplicates/delete` delete assets for a duplicate group
-- `POST /api/duplicates/delete-photo` delete assets for a single photo
-- `POST /api/duplicates/resolve` set resolved state on a group
-- `GET /api/scores` list aesthetic scores
-- `GET /api/chapters` list chapters
-- `POST /api/chapters` create chapter
-- `PATCH /api/chapters/{chapter_id}` rename chapter
-- `POST /api/chapters/reorder` reorder chapters
-- `POST /api/chapters/{chapter_id}/pages` sync page count
-- `GET /api/chapters/{chapter_id}/pages` list pages
-- `GET /api/pages/{page_id}/items` list page items
-- `POST /api/pages/{page_id}/items` create page item
-- `PATCH /api/pages/items/{item_id}` update page item
-- `POST /api/export` export chapters/pages payload
-- `GET /api/jobs/{job_id}` job status
-- `POST /api/cluster` enqueue cluster job
-- `POST /api/dedupe` enqueue dedupe job
-- `POST /api/score` enqueue scoring job
+## API
 
-## UI Screenshots
+- `GET /api/health`
+- `GET /api/intake/references`
+- `POST /api/intake/references`
+- `GET /api/stacks`
+- `POST /api/duel/pick`
+- `GET /api/themes`
+- `POST /api/themes`
+- `PATCH /api/themes/{theme_id}`
+- `POST /api/themes/assign`
+- `GET /api/timeline`
+- `GET /api/chapters`
+- `POST /api/chapters`
+- `PATCH /api/chapters/{chapter_id}`
+- `POST /api/chapters/reorder`
+- `GET /api/chapters/{chapter_id}/pages`
+- `POST /api/chapters/{chapter_id}/pages`
+- `GET /api/pages/{page_id}/items`
+- `POST /api/pages/{page_id}/items`
+- `PATCH /api/pages/items/{item_id}`
+- `POST /api/book/auto-build`
+- `POST /api/export`
 
-![Intake stage](docs/images/ui/intake.png)
-![Clean stage](docs/images/ui/clean.png)
-![Build stage](docs/images/ui/build.png)
+## Local Checks
 
-## Update Screenshots
-
-Make sure the UI is running at `UI_BASE_URL` (default `http://127.0.0.1:4173`).
+Required backend checks:
 
 ```bash
-cd ui
-npm run screenshots
+uv run --extra dev ruff check .
+uv run --extra dev pytest -q
 ```
 
-## Run Tests
+Strict backend integration gate:
 
 ```bash
-uv run --extra dev pytest
+uv run --extra dev pytest -m gate -q
 ```
+
+## Gate Suite (Playwright)
+
+Run the strict gate suite locally when Playwright files are present (`package.json`, `playwright.config.*`, and `tests/e2e` or `e2e`):
 
 ```bash
-cd ui
-npm run test
+npm ci
+npx playwright install --with-deps
+npx playwright test
 ```
 
-## Pre-Push Checks
+## CI Behavior
 
-This repo ships a pre-push hook that runs:
+GitHub Actions defines two lanes:
 
-- trufflehog secrets scan (via podman)
-- ruff
-- UI lint
+1. **Backend checks (required):** `uv sync --extra dev`, `ruff`, and `pytest`.
+2. **Full-app gate suite (non-blocking):** runs Playwright if present and is marked `continue-on-error: true`.
 
-To install the hook:
-
-```bash
-ln -sf ../../scripts/pre-push.sh .git/hooks/pre-push
-```
-
-## Repo Structure
-
-- `src/photobook/`: backend modules (thumbnails, API, SQLite store)
-- `tests/`: integration tests
-- `ui/`: React/Vite UI
-- `scripts/`: repo automation helpers
-- `step-*.md`: project workflow steps (migration in progress)
+If the gate lane fails, CI uploads Playwright artifacts (`playwright-report`, `test-results`) for debugging, but it does not block merging.

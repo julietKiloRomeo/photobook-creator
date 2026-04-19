@@ -1,0 +1,230 @@
+{
+  "dataset": "vacation-20",
+  "generator": "openai-image-via-llm-gateway",
+  "generated_at": "2026-04-18T17:34:53.988557+00:00",
+  "gateway_base_url": "https://llm-gateway.topsoe.dk/v1",
+  "model": "gpt-image-1",
+  "count": 20,
+  "items": [
+    {
+      "id": "vac-01",
+      "file": "vacation_01.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_01.jpg",
+      "prompt": "Photorealistic vacation photo, golden hour on a beach boardwalk with palm trees and gentle surf in the distance, candid travel snapshot, natural colors, no text, no watermark.",
+      "tags": [
+        "beach",
+        "sunset",
+        "boardwalk"
+      ]
+    },
+    {
+      "id": "vac-02",
+      "file": "vacation_02.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_02.jpg",
+      "prompt": "Photorealistic vacation photo, alpine hiking trail above a turquoise mountain lake, bright clear sky, candid travel snapshot, no people close-up, no text, no watermark.",
+      "tags": [
+        "mountain",
+        "lake",
+        "hike"
+      ]
+    },
+    {
+      "id": "vac-03",
+      "file": "vacation_03.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_03.jpg",
+      "prompt": "Photorealistic vacation photo, historic European old-town square with outdoor cafe tables and warm evening light, candid travel style, no text, no watermark.",
+      "tags": [
+        "city",
+        "old-town",
+        "cafe"
+      ]
+    },
+    {
+      "id": "vac-04",
+      "file": "vacation_04.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_04.jpg",
+      "prompt": "Photorealistic vacation photo, desert roadside lookout with sandstone cliffs and a winding road, late afternoon light, candid travel style, no text, no watermark.",
+      "tags": [
+        "desert",
+        "roadtrip",
+        "cliffs"
+      ]
+    },
+    {
+      "id": "vac-05",
+      "file": "vacation_05.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_05.jpg",
+      "prompt": "Photorealistic vacation photo, island harbor with small fishing boats in crystal blue water, bright daylight, candid travel snapshot, no text, no watermark.",
+      "tags": [
+        "harbor",
+        "boats",
+        "island"
+      ]
+    },
+    {
+      "id": "vac-06",
+      "file": "vacation_06.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_06.jpg",
+      "prompt": "Photorealistic vacation photo, lively outdoor street market with colorful produce stalls and soft morning light, candid travel style, no text, no watermark.",
+      "tags": [
+        "market",
+        "street",
+        "food"
+      ]
+    },
+    {
+      "id": "vac-07",
+      "file": "vacation_07.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_07.jpg",
+      "prompt": "Photorealistic vacation photo, forest trail leading to a cascading waterfall, misty atmosphere, handheld travel photography look, no text, no watermark.",
+      "tags": [
+        "forest",
+        "waterfall",
+        "trail"
+      ]
+    },
+    {
+      "id": "vac-08",
+      "file": "vacation_08.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_08.jpg",
+      "prompt": "Photorealistic vacation photo, dramatic coastal cliffs with ocean panorama and whitecaps, overcast but bright sky, travel snapshot, no text, no watermark.",
+      "tags": [
+        "coast",
+        "cliffs",
+        "panorama"
+      ]
+    },
+    {
+      "id": "vac-09",
+      "file": "vacation_09.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_09.jpg",
+      "prompt": "Photorealistic vacation photo, tropical resort pool with lush greenery and sun umbrellas, midday sun, candid vacation style, no text, no watermark.",
+      "tags": [
+        "resort",
+        "pool",
+        "tropical"
+      ]
+    },
+    {
+      "id": "vac-10",
+      "file": "vacation_10.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_10.jpg",
+      "prompt": "Photorealistic vacation photo, scenic train ride view through a large window with rolling green hills, natural reflections, travel documentary feel, no text, no watermark.",
+      "tags": [
+        "train",
+        "window",
+        "landscape"
+      ]
+    },
+    {
+      "id": "vac-11",
+      "file": "vacation_11.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_11.jpg",
+      "prompt": "Photorealistic vacation photo, early sunrise at a quiet sandy beach with footprints near shoreline, pastel sky, candid travel shot, no text, no watermark.",
+      "tags": [
+        "beach",
+        "sunrise",
+        "shore"
+      ]
+    },
+    {
+      "id": "vac-12",
+      "file": "vacation_12.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_12.jpg",
+      "prompt": "Photorealistic vacation photo, mountain valley with a small hillside village and winding road, soft golden light, candid travel style, no text, no watermark.",
+      "tags": [
+        "mountain",
+        "village",
+        "valley"
+      ]
+    },
+    {
+      "id": "vac-13",
+      "file": "vacation_13.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_13.jpg",
+      "prompt": "Photorealistic vacation photo, modern museum exterior with striking architecture in a clean city plaza, blue hour lighting, travel snapshot, no text, no watermark.",
+      "tags": [
+        "museum",
+        "architecture",
+        "city"
+      ]
+    },
+    {
+      "id": "vac-14",
+      "file": "vacation_14.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_14.jpg",
+      "prompt": "Photorealistic vacation photo, sweeping desert dunes at sunset with long shadows and warm tones, candid travel framing, no text, no watermark.",
+      "tags": [
+        "desert",
+        "dunes",
+        "sunset"
+      ]
+    },
+    {
+      "id": "vac-15",
+      "file": "vacation_15.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_15.jpg",
+      "prompt": "Photorealistic vacation photo, harbor promenade at night with reflected city lights on calm water, travel snapshot, no text, no watermark.",
+      "tags": [
+        "harbor",
+        "night",
+        "lights"
+      ]
+    },
+    {
+      "id": "vac-16",
+      "file": "vacation_16.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_16.jpg",
+      "prompt": "Photorealistic vacation photo, colorful kayaks by a shallow turquoise lagoon, bright daylight and soft clouds, candid travel style, no text, no watermark.",
+      "tags": [
+        "beach",
+        "kayak",
+        "lagoon"
+      ]
+    },
+    {
+      "id": "vac-17",
+      "file": "vacation_17.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_17.jpg",
+      "prompt": "Photorealistic vacation photo, rustic mountain cabin among pine trees with distant snowy peaks, crisp morning light, travel photo look, no text, no watermark.",
+      "tags": [
+        "mountain",
+        "cabin",
+        "pine"
+      ]
+    },
+    {
+      "id": "vac-18",
+      "file": "vacation_18.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_18.jpg",
+      "prompt": "Photorealistic vacation photo, riverside city walk with stone bridge and bicycles, late afternoon light, candid travel snapshot, no text, no watermark.",
+      "tags": [
+        "city",
+        "river",
+        "bridge"
+      ]
+    },
+    {
+      "id": "vac-19",
+      "file": "vacation_19.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_19.jpg",
+      "prompt": "Photorealistic vacation photo, canyon viewpoint with layered red rock formations and expansive sky, travel documentary style, no text, no watermark.",
+      "tags": [
+        "desert",
+        "canyon",
+        "viewpoint"
+      ]
+    },
+    {
+      "id": "vac-20",
+      "file": "vacation_20.jpg",
+      "path": "tests/fixtures/vacation-20/vacation_20.jpg",
+      "prompt": "Photorealistic vacation photo, wooden pier extending into clear island water with anchored boats, golden hour glow, candid travel style, no text, no watermark.",
+      "tags": [
+        "island",
+        "pier",
+        "boats"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,205 @@
+
+
+<link rel="stylesheet" href="/frontend/styles/darkroom.css">
+
+
+<h2 class="sr-only">Darkroom — photo book creator with stacks, duel, themes, timeline, and book lenses</h2>
+
+<div class="app" id="app" style="position:relative">
+
+<div class="topbar">
+  <div class="brand">dark<em>room</em></div>
+  <div class="lenses">
+    <button class="lens active" data-lens="stacks" onclick="goLens('stacks')">
+      <div class="lens-dot"></div>Stacks<span class="lens-badge" id="lb-stacks">0/6</span>
+    </button>
+    <button class="lens" data-lens="duel" onclick="goLens('duel')">
+      <div class="lens-dot"></div>Duel<span class="lens-badge" id="lb-duel">6 left</span>
+    </button>
+    <button class="lens" data-lens="themes" onclick="goLens('themes')">
+      <div class="lens-dot"></div>Themes<span class="lens-badge" id="lb-themes">3</span>
+    </button>
+    <button class="lens" data-lens="timeline" onclick="goLens('timeline')">
+      <div class="lens-dot"></div>Timeline
+    </button>
+    <button class="lens" data-lens="book" onclick="goLens('book')">
+      <div class="lens-dot"></div>Book<span class="lens-badge" id="lb-book">0 pages</span>
+    </button>
+  </div>
+  <div class="topbar-right">
+    <button class="share-btn" onclick="openShare()">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="10" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.1"/><circle cx="10" cy="10.5" r="1.5" stroke="currentColor" stroke-width="1.1"/><circle cx="2.5" cy="6.5" r="1.5" stroke="currentColor" stroke-width="1.1"/><path d="M8.6 3.3L3.8 5.7M8.6 9.7L3.8 7.3" stroke="currentColor" stroke-width="1.1"/></svg>
+      Share
+    </button>
+    <button class="upload-btn" onclick="doUpload()">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v7M4 3.5L6.5 1 9 3.5M1 9.5v1A1.5 1.5 0 002.5 12h8A1.5 1.5 0 0012 10.5v-1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Upload
+    </button>
+    <div class="avatar" style="background:#EEEDFE;color:#3C3489">YO</div>
+    <div class="avatar" style="background:#E1F5EE;color:#085041;margin-left:-6px;border:1.5px solid var(--color-background-primary)">MK</div>
+    <div class="avatar" style="background:#FAECE7;color:#712B13;margin-left:-6px;border:1.5px solid var(--color-background-primary)">JL</div>
+  </div>
+</div>
+
+<div class="main" style="position:relative">
+
+<div class="panel active" id="panel-stacks">
+  <div class="section-header">
+    <div>
+      <div class="section-title">All stacks</div>
+      <div class="section-meta">Each stack is a group of similar shots — pick the best, or use Duel for fast decisions</div>
+    </div>
+    <div class="prog-row">
+      <span class="section-meta" id="stacks-label">0 of 6 resolved</span>
+      <div class="prog-bar"><div class="prog-fill" id="stacks-fill" style="width:0%;background:#7F77DD"></div></div>
+    </div>
+  </div>
+  <div class="stacks-grid" id="stacks-grid"></div>
+</div>
+
+<div class="panel" id="panel-duel">
+  <div class="duel-wrap" id="duel-wrap"></div>
+</div>
+
+<div class="panel" id="panel-themes">
+  <div class="section-header">
+    <div>
+      <div class="section-title">Themes</div>
+      <div class="section-meta">Group stacks into stories — drag between themes freely</div>
+    </div>
+    <button class="btn-p" style="font-size:12px;padding:6px 13px" onclick="addTheme()">+ New theme</button>
+  </div>
+  <div class="themes-layout">
+    <div id="themes-canvas"></div>
+    <div class="pool-box" id="pool-box">
+      <div class="pool-title">Unassigned</div>
+      <div class="pool-chips" id="pool-chips"></div>
+      <div class="pool-drop" id="pool-drop" ondragover="dov(event,'pool')" ondrop="ddr(event,'pool')" ondragleave="dlv(event)">Return here</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel-timeline">
+  <div class="section-header">
+    <div>
+      <div class="section-title">Timeline</div>
+      <div class="section-meta">All stacks in chronological order — click any to resolve or reassign</div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-text-tertiary)"><div style="width:10px;height:10px;border-radius:2px;border-left:3px solid #1D9E75;background:var(--color-background-secondary)"></div>resolved</div>
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-text-tertiary)"><div style="width:10px;height:10px;border-radius:2px;border-left:3px solid #AFA9EC;background:var(--color-background-secondary)"></div>pending</div>
+    </div>
+  </div>
+  <div id="timeline-wrap"></div>
+</div>
+
+<div class="panel" id="panel-book">
+  <div class="section-header" style="margin-bottom:8px">
+    <div>
+      <div class="section-title">Photo book</div>
+      <div class="section-meta">Arrange pages per theme, drag photos into slots</div>
+    </div>
+  </div>
+  <div class="book-layout">
+    <div class="book-nav" id="book-nav">
+      <div class="book-nav-head">Themes</div>
+    </div>
+    <div class="book-main" id="book-main">
+      <div class="book-head">
+        <div class="book-head-title" id="book-head-title">Select a theme</div>
+        <div style="display:flex;gap:6px" id="book-head-actions"></div>
+      </div>
+      <div class="pages-row" id="pages-row"></div>
+      <div class="page-editor-area" id="page-editor-area" style="display:none">
+        <div class="page-canvas" id="page-canvas">
+          <div class="layout-bar">
+            <button class="lb on" onclick="setLay('2x2',this)" title="2×2">
+              <div class="lgi" style="grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr"><div style="background:var(--color-border-secondary);border-radius:1px"></div><div style="background:var(--color-border-secondary);border-radius:1px"></div><div style="background:var(--color-border-secondary);border-radius:1px"></div><div style="background:var(--color-border-secondary);border-radius:1px"></div></div>
+            </button>
+            <button class="lb" onclick="setLay('1x1',this)" title="Full">
+              <div class="lgi" style="grid-template-columns:1fr"><div style="background:var(--color-border-secondary);border-radius:1px"></div></div>
+            </button>
+            <button class="lb" onclick="setLay('2x1',this)" title="Side by side">
+              <div class="lgi" style="grid-template-columns:1fr 1fr"><div style="background:var(--color-border-secondary);border-radius:1px"></div><div style="background:var(--color-border-secondary);border-radius:1px"></div></div>
+            </button>
+            <button class="lb" onclick="setLay('1+2',this)" title="Hero + 2">
+              <div class="lgi" style="grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr"><div style="background:var(--color-border-secondary);border-radius:1px;grid-row:1/3"></div><div style="background:var(--color-border-secondary);border-radius:1px"></div><div style="background:var(--color-border-secondary);border-radius:1px"></div></div>
+            </button>
+          </div>
+        </div>
+        <div class="photos-panel">
+          <div class="pp-head">Theme photos</div>
+          <div class="pp-list" id="pp-list"></div>
+          <button class="pp-txt-btn" onclick="addTxt()">+ Text block</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="stack-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title" id="sm-title">Choose best shot</div>
+      <button class="modal-x" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body"><div class="modal-hint" style="font-size:12px;color:var(--color-text-tertiary);margin-bottom:11px">Tap a photo to select it as the pick for this stack</div><div class="photo-grid" id="sm-grid"></div></div>
+    <div class="modal-foot">
+      <span style="font-size:12px;color:var(--color-text-tertiary)" id="sm-sel-label">None selected</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn-s" onclick="closeModal()">Cancel</button>
+        <button class="btn-p" id="sm-confirm" onclick="confirmPick()" disabled>Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="share-modal" style="display:none">
+  <div class="modal" style="max-height:520px">
+    <div class="modal-head">
+      <div class="modal-title">Share project</div>
+      <button class="modal-x" onclick="document.getElementById('share-modal').style.display='none'">✕</button>
+    </div>
+    <div class="share-modal-body">
+      <div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:7px">Anyone with the link can join based on their role</div>
+        <div class="share-url-row">
+          <input type="text" readonly value="darkroom.local/join/ski-trip-2026-x7f2k" id="share-url-inp" />
+          <button class="btn-p" onclick="copyLink()">Copy</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">Link role</div>
+        <div class="role-grid">
+          <div class="role-card sel-role" onclick="selRole(this)">
+            <div class="role-name">Contributor</div>
+            <div class="role-desc">Upload photos, vote on picks</div>
+          </div>
+          <div class="role-card" onclick="selRole(this)">
+            <div class="role-name">Curator</div>
+            <div class="role-desc">Edit themes and stacks</div>
+          </div>
+          <div class="role-card" onclick="selRole(this)">
+            <div class="role-name">Viewer</div>
+            <div class="role-desc">See the finished book</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">Currently collaborating</div>
+        <div class="collab-list">
+          <div class="collab-row"><div class="collab-av" style="background:#EEEDFE;color:#3C3489">YO</div><span style="flex:1">You (owner)</span><span style="font-size:11px;color:var(--color-text-tertiary)">owner</span></div>
+          <div class="collab-row"><div class="collab-av" style="background:#E1F5EE;color:#085041">MK</div><span style="flex:1">Mum K.</span><span style="font-size:11px;color:var(--color-text-tertiary)">curator</span></div>
+          <div class="collab-row"><div class="collab-av" style="background:#FAECE7;color:#712B13">JL</div><span style="flex:1">Jack L.</span><span style="font-size:11px;color:var(--color-text-tertiary)">contributor</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</div>
+
+
+<script type="module" src="/frontend/js/main.js"></script>
+

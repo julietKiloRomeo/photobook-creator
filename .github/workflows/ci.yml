@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  backend-checks:
+    name: Backend checks (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Ruff
+        run: uv run --extra dev ruff check .
+
+      - name: Pytest
+        run: uv run --extra dev pytest -q
+
+  gate-suite:
+    name: Full-app gate suite (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Playwright suite
+        id: detect
+        shell: bash
+        run: |
+          HAS_PACKAGE=false
+          HAS_CONFIG=false
+          HAS_TESTS=false
+
+          if [[ -f package.json ]]; then
+            HAS_PACKAGE=true
+          fi
+
+          if compgen -G "playwright.config.*" > /dev/null; then
+            HAS_CONFIG=true
+          fi
+
+          if [[ -d tests/e2e ]] || [[ -d e2e ]]; then
+            HAS_TESTS=true
+          fi
+
+          if [[ "$HAS_PACKAGE" == "true" && "$HAS_CONFIG" == "true" && "$HAS_TESTS" == "true" ]]; then
+            echo "has_suite=true" >> "$GITHUB_OUTPUT"
+            echo "Playwright suite detected."
+          else
+            echo "has_suite=false" >> "$GITHUB_OUTPUT"
+            echo "Playwright suite not detected (requires package.json + playwright.config.* + tests/e2e|e2e)."
+          fi
+
+      - name: Set up Node
+        if: steps.detect.outputs.has_suite == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        if: steps.detect.outputs.has_suite == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        if: steps.detect.outputs.has_suite == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install backend dependencies
+        if: steps.detect.outputs.has_suite == 'true'
+        run: uv sync --extra dev
+
+      - name: Install frontend dependencies
+        if: steps.detect.outputs.has_suite == 'true'
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Install Playwright browsers
+        if: steps.detect.outputs.has_suite == 'true'
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright gate suite
+        if: steps.detect.outputs.has_suite == 'true'
+        run: npx playwright test
+
+      - name: Gate suite not present
+        if: steps.detect.outputs.has_suite != 'true'
+        run: echo "Gate suite skipped because Playwright files are not present yet."
+
+      - name: Upload Playwright artifacts on failure
+        if: failure() && steps.detect.outputs.has_suite == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-gate-artifacts
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore

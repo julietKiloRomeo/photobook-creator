@@ -1,0 +1,23 @@
+[agents."pm-agent"]
+description = "Use when triaging GitHub issues, assigning role labels, and coordinating delegated work."
+config_file = "agents/pm-agent.toml"
+
+[agents."dev-agent"]
+description = "Use when implementing approved feature or bug changes in delegated worktrees."
+config_file = "agents/dev-agent.toml"
+
+[agents."frontend-test-agent"]
+description = "Use when running frontend tests, capturing screenshots, and posting validation reports."
+config_file = "agents/frontend-test-agent.toml"
+
+[agents."refactor-agent"]
+description = "Use when simplifying architecture/docs/tests with fail-fast and low-complexity refactors."
+config_file = "agents/refactor-agent.toml"
+
+[agents."merge-integrator"]
+description = "Use when validating delegated branches, squash-merging to main, and cleaning up worktrees."
+config_file = "agents/merge-integrator.toml"
+
+[agents."docs-maintainer"]
+description = "Use when updating README and policy docs to match implemented behavior and workflow."
+config_file = "agents/docs-maintainer.toml"

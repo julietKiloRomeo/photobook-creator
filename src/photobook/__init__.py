@@ -1,1 +1,0 @@
-"""Photo book creator toolkit."""

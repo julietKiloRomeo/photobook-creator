@@ -12,7 +12,28 @@ Each agent only pulls GitHub issues labeled for its role and assigned to it.
 - **Frontend Test Agent** (`role:test`): Runs frontend tests, captures screenshots, performs LLM visual inspection, and posts a report with recommendations to the GitHub issue. Uses `.agents/skills/webapp-testing`.
 - **Developer Agent** (`role:dev`): Implements tasks from GitHub issues. Prefers simple over complex, small focused files, and changes that are easy for humans to review. Uses `.agents/skills/frontend-design` when doing UI work.
 - **Refactor Agent** (`role:refactor`): Audits docstrings, README, and architecture. Opens issues/tasks to simplify structure and tests. Avoids special cases and prefers fail-fast behavior.
-- **Project Manager Agent** (`role:pm`): Triages and assigns issues, manages labels, breaks large or vague requests into small well-scoped issues, merges worktrees into `main`, and pushes to origin/GitHub.
+- **Project Manager Agent** (`role:pm`): Triages and assigns issues, manages labels, breaks large or vague requests into small well-scoped issues, and coordinates handoff to `merge-integrator` for merge/cleanup.
+
+## Subagents
+
+- Project subagent registration lives in `.codex/config.toml`.
+- Subagent definitions live in `.codex/agents/*.toml` with per-role instruction files in `.codex/agents/*.md`.
+- Role names:
+  - `pm-agent`
+  - `dev-agent`
+  - `frontend-test-agent`
+  - `refactor-agent`
+  - `merge-integrator`
+  - `docs-maintainer`
+- Selection quick guide:
+  - `pm-agent`: triage, issue decomposition, assignment/routing, and worktree orchestration.
+  - `dev-agent`: implementation work in delegated worktrees.
+  - `frontend-test-agent`: frontend test runs, screenshots, and issue-level validation reports.
+  - `refactor-agent`: simplification and fail-fast refactors.
+  - `merge-integrator`: validation, squash merge into `main`, and delegated worktree cleanup.
+  - `docs-maintainer`: README/AGENTS/doc alignment with implemented behavior.
+- Keep this `AGENTS.md` focused on shared project policy and keep role behavior in the subagent files.
+- When role behavior changes, update matching files under `.codex/agents/`.
 
 ## GitHub-Only Communication
 
@@ -27,7 +48,7 @@ Each agent only pulls GitHub issues labeled for its role and assigned to it.
 - Each role uses a separate git worktree and branch.
 - Branch naming: `role/<issue-id>-<short-slug>`.
 - Worktree path: `../photo-book-creator-wt/<role>/<issue-id>-<short-slug>`.
-- Project Manager may create worktrees for agents, merges worktree branches, and pushes to origin/GitHub.
+- Project Manager may create worktrees for agents; `merge-integrator` owns merge execution and cleanup.
 - Use `.agents/skills/github-ops/scripts/worktree-create` and `worktree-cleanup` for consistent setup/teardown.
 
 ## UI/UX Specs
