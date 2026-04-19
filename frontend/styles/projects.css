@@ -183,6 +183,12 @@ button:disabled {
   gap: 2px;
 }
 
+.project-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .project-name {
   font-size: 14px;
   font-weight: 600;
@@ -207,6 +213,36 @@ button:disabled {
 .open-btn:hover {
   border-color: var(--color-accent);
   color: var(--color-text-primary);
+}
+
+.delete-project-btn {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 0.5px solid var(--color-border-secondary);
+  background: var(--color-background-primary);
+  color: var(--color-text-tertiary);
+  border-radius: 999px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition: opacity 0.15s ease, transform 0.15s ease, border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.project-item:hover .delete-project-btn,
+.project-item:focus-within .delete-project-btn {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.delete-project-btn:hover:not(:disabled) {
+  border-color: #d68383;
+  background: #fdeeee;
+  color: #aa2b2b;
 }
 
 .empty-state {
@@ -239,6 +275,16 @@ button:disabled {
   .project-item {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .project-actions {
+    width: 100%;
+  }
+
+  .delete-project-btn {
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
   }
 
   button {

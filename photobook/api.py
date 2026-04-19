@@ -61,6 +61,7 @@ from photobook.project_store import (
 )
 from photobook.projects_index import (
     create_project,
+    delete_project,
     ensure_default_project,
     get_project,
     get_project_db_path,
@@ -505,6 +506,12 @@ def create_app() -> FastAPI:
     def post_project(payload: ProjectCreateRequest) -> JSONResponse:
         project = create_project(payload.name.strip())
         return JSONResponse(project, status_code=201)
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project_details(project_id: str) -> JSONResponse:
+        if not delete_project(project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        return JSONResponse({"status": "ok", "project_id": project_id})
 
     @app.get("/api/projects/{project_id}")
     def get_project_details(project_id: str) -> JSONResponse:

@@ -85,11 +85,44 @@ function escAttr(value){
     .replaceAll('>','&gt;');
 }
 
-function photoStyle(photo,fallback='var(--color-background-secondary)'){
+function photoStyle(photo,fallback='var(--color-background-secondary)',fit='cover'){
   const base=`background:${photo?.color||fallback};`;
   if(!photo?.url)return base;
   const safeUrl=encodeURI(String(photo.url));
-  return `${base}background-image:url(${safeUrl});background-size:cover;background-position:center;background-repeat:no-repeat;`;
+  return `${base}background-image:url(${safeUrl});background-size:${fit};background-position:center;background-repeat:no-repeat;`;
+}
+
+function ensureInspectPreview(){
+  let overlay=document.getElementById('inspect-preview');
+  if(overlay)return overlay;
+  overlay=document.createElement('div');
+  overlay.id='inspect-preview';
+  overlay.className='inspect-preview';
+  overlay.innerHTML='<div class="inspect-preview-frame"><img id="inspect-preview-img" alt="Large photo preview"/><div class="inspect-preview-caption" id="inspect-preview-caption"></div></div>';
+  document.getElementById('app')?.appendChild(overlay);
+  return overlay;
+}
+
+function showInspectPreview(photo){
+  if(!photo?.url)return;
+  const overlay=ensureInspectPreview();
+  const img=document.getElementById('inspect-preview-img');
+  const cap=document.getElementById('inspect-preview-caption');
+  if(img)img.src=String(photo.url);
+  if(cap)cap.textContent=photo.label||'';
+  overlay.classList.add('show');
+}
+
+function hideInspectPreview(){
+  const overlay=document.getElementById('inspect-preview');
+  if(!overlay)return;
+  overlay.classList.remove('show');
+}
+
+function bindInspectHover(element,photo){
+  if(!element || !photo?.url)return;
+  element.addEventListener('mouseenter',()=>showInspectPreview(photo));
+  element.addEventListener('mouseleave',hideInspectPreview);
 }
 
 function normalizePhoto(photo){
@@ -246,6 +279,7 @@ function updateBadges(){
 }
 
 function goLens(l){
+  hideInspectPreview();
   if((l==='themes' || l==='book') && !isClusterFinal()){
     showToast('Refining stacks... Themes and Book are temporarily locked');
     return;
@@ -317,9 +351,10 @@ function openStack(sid){
     const d=document.createElement('div');
     d.className='photo-opt'+((tempPick===pid)?' sel':'');
     d.dataset.pid=pid;d.onclick=()=>selPick(pid);
-    d.innerHTML=`<div class="photo-opt-img" style="${photoStyle(p)}display:flex;align-items:flex-end;padding:5px"><span style="font-size:9px;color:rgba(0,0,0,.38)">${escAttr(p.label)}</span></div>
+    d.innerHTML=`<div class="photo-opt-img" style="${photoStyle(p,'#ccc','contain')}display:flex;align-items:flex-end;padding:5px"><span style="font-size:9px;color:rgba(0,0,0,.38)">${escAttr(p.label)}</span></div>
       <div class="photo-opt-lbl">${escAttr(p.label)}</div>
       <div class="checkmark"><div class="ck"></div></div>`;
+    bindInspectHover(d.querySelector('.photo-opt-img'),p);
     g.appendChild(d);
   });
   updateSMFoot();
@@ -423,7 +458,7 @@ async function splitSelected(){
   duelStacks=buildDuelStacks();
   showToast('Stack split');
 }
-function closeModal(){document.getElementById('stack-modal').style.display='none';openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
+function closeModal(){document.getElementById('stack-modal').style.display='none';hideInspectPreview();openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
 
 function buildDuelStacks(){
   return STACKS
@@ -464,7 +499,7 @@ function renderDuel(){
     const cls=`duel-card${picked?' winner':otherPicked?' loser':''}`;
     const avHTML=avatars.filter(a=>a.vote===pid).map(a=>`<div class="duel-voter" style="background:${a.bg};color:${a.fg}">${a.init}</div>`).join('');
     return`<div class="${cls}" onclick="pickDuel('${s.id}','${pid}')">
-      <div class="duel-img" style="${photoStyle(p,'#ccc')}">
+      <div class="duel-img" data-pid="${escAttr(pid)}" style="${photoStyle(p,'#ccc','contain')}">
         <div class="duel-img-label">${escAttr(p?p.label:'')}</div>
       </div>
       <div class="duel-footer">
@@ -489,6 +524,12 @@ function renderDuel(){
     ${cardHTML(pairB,pB,pickedB,pickedA,votesB,collabAvatars)}
   </div>
   ${s.photos.length>2?`<div style="font-size:11px;color:var(--color-text-tertiary)">Showing 2 of ${s.photos.length} shots — <span style="cursor:pointer;color:#7F77DD" onclick="openStack('${s.id}')">see all in grid</span></div>`:''}`;
+  wrap.querySelectorAll('.duel-img').forEach((el)=>{
+    const pid=el.getAttribute('data-pid');
+    if(!pid)return;
+    const photo=getP(pid);
+    if(photo)bindInspectHover(el,photo);
+  });
 }
 
 function pickDuel(sid,pid){

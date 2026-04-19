@@ -84,8 +84,43 @@ function createProjectItem(project) {
     window.location.assign(`/darkroom/${encodeURIComponent(project.id)}`);
   });
 
+  const deleteButton = document.createElement('button');
+  deleteButton.type = 'button';
+  deleteButton.className = 'delete-project-btn';
+  deleteButton.title = 'Delete project';
+  deleteButton.setAttribute('aria-label', `Delete ${project.name || 'project'}`);
+  deleteButton.innerHTML = '&times;';
+  deleteButton.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    if (!project.id) {
+      return;
+    }
+
+    const yes = window.confirm(`Delete "${project.name || 'Untitled project'}"? This cannot be undone.`);
+    if (!yes) {
+      return;
+    }
+
+    deleteButton.disabled = true;
+    openButton.disabled = true;
+    setStatus(listStatus, 'Deleting project...');
+
+    try {
+      await deleteProject(project.id);
+      await loadProjects();
+      setStatus(listStatus, 'Project deleted.');
+    } catch (error) {
+      setStatus(listStatus, error instanceof Error ? error.message : 'Could not delete project.', true);
+      deleteButton.disabled = false;
+      openButton.disabled = false;
+    }
+  });
+
   main.append(title, meta);
-  item.append(main, openButton);
+  const actions = document.createElement('div');
+  actions.className = 'project-actions';
+  actions.append(openButton, deleteButton);
+  item.append(main, actions);
 
   return item;
 }
@@ -140,6 +175,12 @@ async function createProject(name) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ name }),
+  });
+}
+
+async function deleteProject(projectId) {
+  await fetchJson(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
   });
 }
 

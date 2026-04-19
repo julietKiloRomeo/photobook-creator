@@ -401,3 +401,28 @@ def test_reset_project_storage_tolerates_enotempty(tmp_path, monkeypatch) -> Non
     assert projects_index.get_project_root(project_id).exists()
     assert projects_index.get_project_originals_dir(project_id).exists()
     assert projects_index.get_project_derived_dir(project_id).exists()
+
+
+def test_delete_project_endpoint_removes_project_and_storage(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+
+    create = client.post("/api/projects", json={"name": "Delete Me"})
+    assert create.status_code == 201
+    project_id = create.json()["id"]
+    project_root = projects_index.get_project_root(project_id)
+    (project_root / "originals" / "marker.txt").write_text("to-delete", encoding="utf-8")
+
+    remove = client.delete(f"/api/projects/{project_id}")
+    assert remove.status_code == 200
+    assert remove.json()["status"] == "ok"
+
+    details = client.get(f"/api/projects/{project_id}")
+    assert details.status_code == 404
+
+    listed = client.get("/api/projects")
+    assert listed.status_code == 200
+    assert all(item["id"] != project_id for item in listed.json()["items"])
+    assert not project_root.exists()
+
+    remove_again = client.delete(f"/api/projects/{project_id}")
+    assert remove_again.status_code == 404

@@ -132,6 +132,19 @@ def ensure_default_project() -> dict[str, str]:
     return create_project("My First Book")
 
 
+def delete_project(project_id: str) -> bool:
+    ensure_index_schema()
+    with _connect_index() as conn:
+        cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        deleted = cursor.rowcount > 0
+
+    if not deleted:
+        return False
+
+    _safe_rmtree(get_project_root(project_id))
+    return True
+
+
 def _safe_rmtree(path: Path, *, retries: int = 5) -> None:
     for attempt in range(1, retries + 1):
         try:
