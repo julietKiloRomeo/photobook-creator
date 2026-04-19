@@ -57,6 +57,47 @@ let uploadProgressPercent=0;
 let clusterState={state:'final',operation_id:null};
 const chapterByTheme={};
 const chapterEnsurePromises={};
+const UPLOAD_IDLE_TIP_DELAY_MS = 5000;
+const UPLOAD_IDLE_TIP_ROTATE_MS = 2800;
+const UPLOAD_IDLE_TIPS = {
+  uploading: [
+    'Packing negatives into the darkroom satchel.',
+    'Checking every frame for proper exposure tags.',
+    'Dusting film canisters before they hit the light table.',
+    'Courier is jogging these shots into the lab.',
+  ],
+  indexing: [
+    'Pinning each photo to the contact sheet ledger.',
+    'Counting frames so no memory gets left behind.',
+    'Labeling sleeves: day, location, and best guesses.',
+    'Sorting boots, sunsets, and blurry victory laps.',
+  ],
+  provisional_clustering: [
+    'Hanging quick proofs to spot obvious twins.',
+    'Bundling near-matches into first-pass piles.',
+    'Marking suspicious duplicates with pencil circles.',
+    'Drafting rough stack borders before the fine cut.',
+  ],
+  refining: [
+    'Arguing politely with the stack goblins.',
+    'Tightening clusters until the stories line up.',
+    'Running final checks on duplicate traps.',
+    'Threading stacks into themes the book can carry.',
+  ],
+  generic: [
+    'The safelight is on; patience improves the print.',
+    'Nothing is frozen, the darkroom is just thinking.',
+    'Good albums simmer before they click.',
+    'Still developing. Great picks are worth the wait.',
+  ],
+};
+let uploadLastRealUpdateAt = 0;
+let uploadIdleWatchTimer = null;
+let uploadTipRotateTimer = null;
+let uploadIdleActive = false;
+let uploadTipPhase = 'uploading';
+let uploadTipIndexByPhase = Object.create(null);
+let uploadLastTipText = '';
 const PROJECT_ID = (() => {
   const match = window.location.pathname.match(/^\/darkroom\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -876,7 +917,105 @@ function uploadStageDetail(progress){
   return progress?.message||'Working...';
 }
 
-function showUploadOverlay(title,detail,percent,{failed=false}={}){
+function tipPoolForPhase(phase){
+  return UPLOAD_IDLE_TIPS[phase] || UPLOAD_IDLE_TIPS.generic;
+}
+
+function setUploadTip(text){
+  const tipEl=document.getElementById('upload-progress-tip');
+  if(!tipEl)return;
+  if(!text){
+    tipEl.textContent='';
+    tipEl.classList.remove('show');
+    tipEl.style.display='none';
+    return;
+  }
+  tipEl.style.display='block';
+  tipEl.textContent=text;
+  tipEl.classList.add('show');
+}
+
+function nextUploadTip(){
+  const phase=uploadTipPhase||'generic';
+  const pool=tipPoolForPhase(phase);
+  if(!pool.length){
+    setUploadTip('');
+    return;
+  }
+  const baseIndex=Number(uploadTipIndexByPhase[phase]||0);
+  let idx=baseIndex%pool.length;
+  let tip=pool[idx];
+  if(pool.length>1 && tip===uploadLastTipText){
+    idx=(idx+1)%pool.length;
+    tip=pool[idx];
+  }
+  uploadTipIndexByPhase[phase]=(idx+1)%pool.length;
+  uploadLastTipText=tip;
+  setUploadTip(tip);
+}
+
+function stopUploadTipRotation(){
+  if(uploadTipRotateTimer!==null){
+    clearInterval(uploadTipRotateTimer);
+    uploadTipRotateTimer=null;
+  }
+}
+
+function resetUploadTipState(){
+  stopUploadTipRotation();
+  if(uploadIdleWatchTimer!==null){
+    clearInterval(uploadIdleWatchTimer);
+    uploadIdleWatchTimer=null;
+  }
+  uploadIdleActive=false;
+  uploadTipPhase='uploading';
+  uploadLastRealUpdateAt=0;
+  uploadLastTipText='';
+  setUploadTip('');
+}
+
+function exitUploadIdleMode(){
+  uploadIdleActive=false;
+  stopUploadTipRotation();
+  setUploadTip('');
+}
+
+function beginUploadIdleModeIfNeeded(){
+  if(uploadIdleActive)return;
+  uploadIdleActive=true;
+  nextUploadTip();
+  uploadTipRotateTimer=setInterval(()=>{
+    if(!uploadIdleActive)return;
+    nextUploadTip();
+  },UPLOAD_IDLE_TIP_ROTATE_MS);
+}
+
+function ensureUploadIdleWatcher(){
+  if(uploadIdleWatchTimer!==null)return;
+  uploadIdleWatchTimer=setInterval(()=>{
+    const overlay=document.getElementById('upload-progress-overlay');
+    if(!overlay || overlay.style.display!=='flex')return;
+    if(uploadIdleActive)return;
+    if(!uploadLastRealUpdateAt)return;
+    if(Date.now()-uploadLastRealUpdateAt<UPLOAD_IDLE_TIP_DELAY_MS)return;
+    beginUploadIdleModeIfNeeded();
+  },500);
+}
+
+function applyUploadActivityState({phase,isRealUpdate,failed}){
+  uploadTipPhase=phase||uploadTipPhase;
+  if(isRealUpdate){
+    uploadLastRealUpdateAt=Date.now();
+    exitUploadIdleMode();
+  }
+  if(failed || phase==='completed' || phase==='failed'){
+    resetUploadTipState();
+    return;
+  }
+  ensureUploadIdleWatcher();
+}
+
+function showUploadOverlay(title,detail,percent,{failed=false,phase='working',isRealUpdate=false}={}){
   const overlay=document.getElementById('upload-progress-overlay');
   if(!overlay)return;
   const pct=Math.max(0,Math.min(100,Math.round(percent)));
@@ -890,6 +1029,7 @@ function showUploadOverlay(title,detail,percent,{failed=false}={}){
   if(pctEl)pctEl.textContent=`${pct}%`;
   if(fillEl)fillEl.style.width=`${pct}%`;
   if(detailEl)detailEl.textContent=detail;
+  applyUploadActivityState({phase,isRealUpdate,failed});
 }
 
 function hideUploadOverlay(){
@@ -897,6 +1037,7 @@ function hideUploadOverlay(){
   if(!overlay)return;
   overlay.style.display='none';
   overlay.classList.remove('failed');
+  resetUploadTipState();
 }
 
 async function refreshUiFromBackend(){
@@ -925,18 +1066,24 @@ async function* walkDirectory(handle,prefix=''){
 
 async function performUpload(entries){
   uploadProgressPercent=1;
-  showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
+  showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent,{
+    phase:'uploading',
+    isRealUpdate:true,
+  });
   const result=await api.uploadFiles(entries,{
     onUploadProgress:(progress)=>{
       const pct=Math.max(1,Math.min(35,Math.round((progress?.progress||0)*35)));
       if(pct>uploadProgressPercent){
         uploadProgressPercent=pct;
-        showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
+        showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent,{
+          phase:'uploading',
+          isRealUpdate:true,
+        });
       }
     },
   });
   if(!result.ok){
-    showUploadOverlay('Upload failed','Could not upload folder',100,{failed:true});
+    showUploadOverlay('Upload failed','Could not upload folder',100,{failed:true,phase:'failed',isRealUpdate:true});
     await new Promise((resolve)=>setTimeout(resolve,900));
     hideUploadOverlay();
     showToast('Upload failed');
@@ -984,7 +1131,7 @@ async function performUpload(entries){
         uploadStageTitle(phase),
         uploadStageDetail(payload),
         uploadProgressPercent,
-        {failed:phase==='failed'},
+        {failed:phase==='failed',phase,isRealUpdate:true},
       );
       if(phase==='indexing' || phase==='provisional_clustering' || phase==='refining'){
         trySync();
@@ -1023,13 +1170,20 @@ async function performUpload(entries){
 
   await refreshUiFromBackend();
   if(completion?.status==='completed'){
-    showUploadOverlay('Upload complete',completion?.message||'Upload complete',100);
+    showUploadOverlay('Upload complete',completion?.message||'Upload complete',100,{
+      phase:'completed',
+      isRealUpdate:true,
+    });
     await new Promise((resolve)=>setTimeout(resolve,700));
     hideUploadOverlay();
     showToast(completion?.message||'Upload complete');
     return;
   }
-  showUploadOverlay('Upload failed',completion?.error||completion?.message||'Upload failed',100,{failed:true});
+  showUploadOverlay('Upload failed',completion?.error||completion?.message||'Upload failed',100,{
+    failed:true,
+    phase:'failed',
+    isRealUpdate:true,
+  });
   await new Promise((resolve)=>setTimeout(resolve,1200));
   hideUploadOverlay();
   showToast('Upload failed');

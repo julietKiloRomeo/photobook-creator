@@ -280,6 +280,16 @@ body{
   font-size:13px;
   color:var(--color-text-secondary);
 }
+.upload-progress-tip{
+  font-size:12px;
+  color:var(--color-text-tertiary);
+  min-height:18px;
+  opacity:0;
+  transition:opacity .2s ease;
+}
+.upload-progress-tip.show{
+  opacity:1;
+}
 .upload-progress-overlay.failed .upload-progress-percent{color:#B03030}
 .upload-progress-overlay.failed .upload-progress-fill{background:linear-gradient(90deg,#D46B6B 0%,#B03030 100%)}
 
