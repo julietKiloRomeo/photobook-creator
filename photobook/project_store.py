@@ -130,6 +130,12 @@ CREATE TABLE IF NOT EXISTS stack_review_state (
     FOREIGN KEY(previous_pick_reference_id) REFERENCES intake_references(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS stack_visibility (
+    stack_id TEXT PRIMARY KEY,
+    ignored INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS upload_operations (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
@@ -433,6 +439,13 @@ def set_stack_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> None:
             ORDER BY stack_id
             """
         ).fetchall()
+        old_visibility_rows = conn.execute(
+            """
+            SELECT stack_id, ignored
+            FROM stack_visibility
+            ORDER BY stack_id
+            """
+        ).fetchall()
 
         old_clusters: dict[str, set[int]] = {}
         for row in old_cluster_rows:
@@ -451,6 +464,7 @@ def set_stack_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> None:
                 "new_reference_ids": [int(item) for item in json.loads(payload["new_reference_ids_json"] or "[]")],
                 "reason": str(payload["reason"] or "new_additions"),
             }
+        old_visibility = {str(row["stack_id"]): bool(row["ignored"]) for row in old_visibility_rows}
 
         mapped_old_for_new: dict[str, str] = {}
         used_old: set[str] = set()
@@ -475,9 +489,12 @@ def set_stack_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> None:
 
         desired_picks: dict[str, int] = {}
         desired_reviews: dict[str, dict[str, Any]] = {}
+        desired_ignored: set[str] = set()
         for new_stack_id, new_refs in new_clusters.items():
             source_stack_id = mapped_old_for_new.get(new_stack_id, new_stack_id)
             old_refs = old_clusters.get(source_stack_id, set())
+            if old_visibility.get(source_stack_id, False):
+                desired_ignored.add(new_stack_id)
             candidate_pick = old_picks.get(source_stack_id)
             if candidate_pick is not None and candidate_pick not in new_refs:
                 candidate_pick = None
@@ -551,6 +568,16 @@ def set_stack_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> None:
                 ],
             )
 
+        conn.execute("DELETE FROM stack_visibility")
+        if desired_ignored:
+            conn.executemany(
+                """
+                INSERT INTO stack_visibility (stack_id, ignored, updated_at)
+                VALUES (?, 1, datetime('now'))
+                """,
+                [(stack_id,) for stack_id in sorted(desired_ignored)],
+            )
+
 
 def list_stack_clusters(db_path: Path) -> list[dict[str, Any]]:
     with _connect(db_path) as conn:
@@ -614,6 +641,41 @@ def list_stack_review_state(db_path: Path) -> dict[str, dict[str, Any]]:
 def clear_stack_review_state(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM stack_review_state")
+
+
+def stack_visibility_map(db_path: Path) -> dict[str, bool]:
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT stack_id, ignored FROM stack_visibility ORDER BY stack_id").fetchall()
+    return {str(stack_id): bool(ignored) for stack_id, ignored in rows}
+
+
+def set_stack_ignored(db_path: Path, stack_id: str, ignored: bool) -> bool:
+    exists = False
+    with _connect(db_path) as conn:
+        exists = (
+            conn.execute("SELECT 1 FROM stack_clusters WHERE stack_id = ? LIMIT 1", (stack_id,)).fetchone()
+            is not None
+        )
+    if not exists:
+        exists = any(str(stack.id) == str(stack_id) for stack in derive_stacks(db_path))
+    if not exists:
+        return False
+
+    with _connect(db_path) as conn:
+        if ignored:
+            conn.execute(
+                """
+                INSERT INTO stack_visibility (stack_id, ignored, updated_at)
+                VALUES (?, 1, datetime('now'))
+                ON CONFLICT(stack_id) DO UPDATE SET
+                  ignored = 1,
+                  updated_at = datetime('now')
+                """,
+                (stack_id,),
+            )
+        else:
+            conn.execute("DELETE FROM stack_visibility WHERE stack_id = ?", (stack_id,))
+    return True
 
 
 def set_cluster_state(db_path: Path, state: str, operation_id: str | None = None) -> None:
@@ -966,6 +1028,16 @@ def split_stack_cluster(
                 (int(theme_row[0]), new_stack_id),
             )
 
+        visibility_row = conn.execute(
+            "SELECT ignored FROM stack_visibility WHERE stack_id = ?",
+            (stack_id,),
+        ).fetchone()
+        if visibility_row is not None and bool(visibility_row[0]):
+            conn.execute(
+                "INSERT OR IGNORE INTO stack_visibility (stack_id, ignored, updated_at) VALUES (?, 1, datetime('now'))",
+                (new_stack_id,),
+            )
+
     return {
         "old_stack_id": stack_id,
         "new_stack_id": new_stack_id,
@@ -983,6 +1055,7 @@ def clear_processing_state(db_path: Path) -> None:
     set_cluster_state(db_path, "final", None)
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM stack_picks")
+        conn.execute("DELETE FROM stack_visibility")
         conn.execute("DELETE FROM theme_stacks")
         conn.execute("DELETE FROM themes")
         conn.execute("DELETE FROM page_items")
@@ -1468,7 +1541,7 @@ def stack_theme_map(db_path: Path) -> dict[str, int]:
     return {str(stack_id): int(theme_id) for stack_id, theme_id in rows}
 
 
-def list_stacks(db_path: Path) -> list[dict[str, Any]]:
+def list_stacks(db_path: Path, *, include_ignored: bool = True) -> list[dict[str, Any]]:
     configured_clusters = list_stack_clusters(db_path)
     if configured_clusters:
         references_by_id = {
@@ -1497,6 +1570,7 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
 
     picks = _stack_pick_map(db_path)
     review_map = list_stack_review_state(db_path)
+    visibility_map = stack_visibility_map(db_path)
     theme_map = stack_theme_map(db_path)
     themes = {item["id"]: item for item in list_themes(db_path)}
 
@@ -1535,6 +1609,9 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
                 if any(ref.id == int(ref_id) for ref in stack.references)
             ]
         needs_review = bool(review_previous_pick is not None and review_new_ids)
+        ignored = bool(visibility_map.get(stack.id, False))
+        if ignored and not include_ignored:
+            continue
 
         theme_id = theme_map.get(stack.id)
         theme = themes.get(theme_id) if theme_id is not None else None
@@ -1549,6 +1626,7 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
                 "pick_reference_id": picked_reference,
                 "resolved": picked_reference is not None and not needs_review,
                 "needs_review": needs_review,
+                "ignored": ignored,
                 "previous_pick_reference_id": review_previous_pick,
                 "new_reference_ids": review_new_ids,
                 "date": first_date,
@@ -1561,8 +1639,8 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
     return items
 
 
-def list_timeline_items(db_path: Path) -> list[dict[str, Any]]:
-    items = list_stacks(db_path)
+def list_timeline_items(db_path: Path, *, include_ignored: bool = True) -> list[dict[str, Any]]:
+    items = list_stacks(db_path, include_ignored=include_ignored)
     items.sort(key=lambda item: str(item.get("date") or ""))
     return items
 
@@ -1576,7 +1654,7 @@ def auto_build_book(db_path: Path) -> list[dict[str, Any]]:
     clear_book(db_path)
 
     themes = list_themes(db_path)
-    stacks = list_stacks(db_path)
+    stacks = list_stacks(db_path, include_ignored=False)
     stacks_by_theme: dict[int, list[dict[str, Any]]] = {}
     for stack in stacks:
         theme_id = stack.get("theme_id")
@@ -1618,3 +1696,67 @@ def auto_build_book(db_path: Path) -> list[dict[str, Any]]:
     _populate_chapter("Ungrouped", unassigned)
 
     return list_pages_with_items(db_path)
+
+
+def delete_stack_with_references(db_path: Path, stack_id: str) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        ref_rows = conn.execute(
+            """
+            SELECT reference_id
+            FROM stack_clusters
+            WHERE stack_id = ?
+            ORDER BY reference_id
+            """,
+            (stack_id,),
+        ).fetchall()
+        if not ref_rows:
+            raise ValueError("stack_not_found")
+        reference_ids = [int(row["reference_id"]) for row in ref_rows]
+        placeholders = ",".join("?" for _ in reference_ids)
+
+        reference_sources = conn.execute(
+            f"""
+            SELECT id, source
+            FROM intake_references
+            WHERE id IN ({placeholders})
+            ORDER BY id
+            """,
+            reference_ids,
+        ).fetchall()
+        derived_paths = [str(row["source"]) for row in reference_sources if row["source"]]
+
+        upload_rows: list[sqlite3.Row] = []
+        if derived_paths:
+            upload_placeholders = ",".join("?" for _ in derived_paths)
+            upload_rows = conn.execute(
+                f"""
+                SELECT id, original_path, derived_path
+                FROM uploads
+                WHERE derived_path IN ({upload_placeholders})
+                ORDER BY id
+                """,
+                derived_paths,
+            ).fetchall()
+
+        upload_ids = [int(row["id"]) for row in upload_rows]
+        original_paths = [str(row["original_path"]) for row in upload_rows if row["original_path"]]
+
+        conn.execute("DELETE FROM theme_stacks WHERE stack_id = ?", (stack_id,))
+        conn.execute("DELETE FROM stack_review_state WHERE stack_id = ?", (stack_id,))
+        conn.execute("DELETE FROM stack_picks WHERE stack_id = ?", (stack_id,))
+        conn.execute("DELETE FROM stack_visibility WHERE stack_id = ?", (stack_id,))
+        conn.execute("DELETE FROM stack_clusters WHERE stack_id = ?", (stack_id,))
+        conn.execute(f"DELETE FROM page_items WHERE reference_id IN ({placeholders})", reference_ids)
+        conn.execute(f"DELETE FROM stack_split_overrides WHERE reference_id IN ({placeholders})", reference_ids)
+        conn.execute(f"DELETE FROM intake_references WHERE id IN ({placeholders})", reference_ids)
+        if upload_ids:
+            upload_id_placeholders = ",".join("?" for _ in upload_ids)
+            conn.execute(f"DELETE FROM uploads WHERE id IN ({upload_id_placeholders})", upload_ids)
+
+    return {
+        "stack_id": stack_id,
+        "reference_ids": reference_ids,
+        "derived_paths": sorted({path for path in derived_paths if path}),
+        "original_paths": sorted({path for path in original_paths if path}),
+    }

@@ -57,8 +57,18 @@ let clusterState={state:'final',operation_id:null};
 const chapterByTheme={};
 const chapterEnsurePromises={};
 const UPLOAD_BATCH_SIZE = 100;
-const UPLOAD_IDLE_TIP_DELAY_MS = 5000;
-const UPLOAD_IDLE_TIP_ROTATE_MS = 2800;
+const STACKS_WINDOW_DEFAULT = 40;
+const STACKS_WINDOW_STEP = 30;
+const TIMELINE_WINDOW_DEFAULT = 80;
+const TIMELINE_WINDOW_STEP = 60;
+const THEME_WINDOW_DEFAULT = 24;
+const THEME_WINDOW_STEP = 20;
+const BOOK_PAGES_WINDOW_DEFAULT = 40;
+const BOOK_PAGES_WINDOW_STEP = 30;
+const BOOK_PHOTOS_WINDOW_DEFAULT = 40;
+const BOOK_PHOTOS_WINDOW_STEP = 30;
+const UPLOAD_IDLE_TIP_DELAY_MS = 2000;
+const UPLOAD_IDLE_TIP_ROTATE_MS = 2000;
 const UPLOAD_IDLE_TIPS = {
   uploading: [
     'Packing negatives into the darkroom satchel.',
@@ -92,7 +102,7 @@ const UPLOAD_IDLE_TIPS = {
   ],
 };
 let uploadLastRealUpdateAt = 0;
-let uploadIdleWatchTimer = null;
+let uploadIdleCountdownTimer = null;
 let uploadTipRotateTimer = null;
 let uploadIdleActive = false;
 let uploadTipPhase = 'uploading';
@@ -101,6 +111,13 @@ let uploadLastTipText = '';
 let inspectSequenceIds = [];
 let inspectSequenceIndex = 0;
 let inspectMode = 'generic';
+let showIgnoredStacks = false;
+let stacksWindow = STACKS_WINDOW_DEFAULT;
+let timelineWindow = TIMELINE_WINDOW_DEFAULT;
+let poolWindow = THEME_WINDOW_DEFAULT;
+const themeWindowById = {};
+const bookPagesWindowByTheme = {};
+const bookPhotosWindowByTheme = {};
 const PROJECT_ID = (() => {
   const match = window.location.pathname.match(/^\/darkroom\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -118,8 +135,51 @@ function getPick(sid){
   return getP(pid);
 }
 function resolved(s){return s.pick!==null && !s.needsReview}
-function resolvedCount(){return STACKS.filter(resolved).length}
+function isStackVisible(stack){
+  if(!stack)return false;
+  return showIgnoredStacks || !stack.ignored;
+}
+function visibleStacks(){
+  return STACKS.filter((stack)=>isStackVisible(stack));
+}
+function parseStackDate(stack){
+  const raw = stack?.date || '';
+  const ts = new Date(raw).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+function compareStackPriority(a,b){
+  const aNeeds = Number(Boolean(a?.needsReview));
+  const bNeeds = Number(Boolean(b?.needsReview));
+  if(aNeeds!==bNeeds)return bNeeds-aNeeds;
+  const aResolved = Number(Boolean(resolved(a)));
+  const bResolved = Number(Boolean(resolved(b)));
+  if(aResolved!==bResolved)return aResolved-bResolved;
+  return parseStackDate(b)-parseStackDate(a);
+}
+function prioritizedVisibleStacks(){
+  return [...visibleStacks()].sort(compareStackPriority);
+}
+function resolvedCount(){return visibleStacks().filter(resolved).length}
 function themeOf(sid){return themes.find(t=>t.stacks.includes(sid))}
+function visibleStackIds(){
+  return new Set(visibleStacks().map((stack)=>String(stack.id)));
+}
+function getThemeWindow(tid){
+  if(themeWindowById[tid]==null)themeWindowById[tid]=THEME_WINDOW_DEFAULT;
+  return themeWindowById[tid];
+}
+function getBookPagesWindow(tid){
+  if(bookPagesWindowByTheme[tid]==null)bookPagesWindowByTheme[tid]=BOOK_PAGES_WINDOW_DEFAULT;
+  return bookPagesWindowByTheme[tid];
+}
+function getBookPhotosWindow(tid){
+  if(bookPhotosWindowByTheme[tid]==null)bookPhotosWindowByTheme[tid]=BOOK_PHOTOS_WINDOW_DEFAULT;
+  return bookPhotosWindowByTheme[tid];
+}
+function renderLimitRow({shown,total,onMore,onAll,label='items'}){
+  if(total<=shown)return '';
+  return `<div class="lens-limit-row"><span>Showing ${shown} of ${total} ${label}</span><div class="lens-limit-actions"><button class="mini-btn" type="button" onclick="${onMore}">Load more</button><button class="mini-btn" type="button" onclick="${onAll}">Show all</button></div></div>`;
+}
 
 function escAttr(value){
   return String(value??'')
@@ -252,6 +312,7 @@ function applyStacksFromApi(items){
       pick:item.pick_reference_id != null ? String(item.pick_reference_id) : null,
       previousPick:item.previous_pick_reference_id != null ? String(item.previous_pick_reference_id) : null,
       needsReview:Boolean(item.needs_review),
+      ignored:Boolean(item.ignored),
       newIds:(item.new_reference_ids||[]).map((rid)=>String(rid)),
       date:item.date||new Date().toISOString().slice(0,10),
     };
@@ -363,16 +424,21 @@ async function ensureThemeChapter(tid){
 }
 
 function updateBadges(){
-  const rc=resolvedCount(),tot=STACKS.length;
+  const visible = visibleStacks();
+  const rc=resolvedCount(),tot=visible.length;
   document.getElementById('lb-stacks').textContent=`${rc}/${tot}`;
-  const left=STACKS.filter(s=>!resolved(s)&&s.photos.length>1).length;
+  const left=visible.filter(s=>!resolved(s)&&s.photos.length>1).length;
   document.getElementById('lb-duel').textContent=left>0?`${left} left`:'done';
   document.getElementById('lb-themes').textContent=themes.length;
   let pgTotal=0;Object.values(pages).forEach(a=>pgTotal+=a.length);
   document.getElementById('lb-book').textContent=pgTotal+(pgTotal===1?' page':' pages');
-  const pct=Math.round(rc/tot*100);
+  const pct=tot>0?Math.round(rc/tot*100):0;
   document.getElementById('stacks-fill').style.width=pct+'%';
   document.getElementById('stacks-label').textContent=`${rc} of ${tot} resolved`;
+  const ignoredBtn=document.getElementById('ignored-toggle-btn');
+  if(ignoredBtn){
+    ignoredBtn.textContent=showIgnoredStacks?'Ignored: showing':'Ignored: hidden';
+  }
 }
 
 function goLens(l){
@@ -394,18 +460,52 @@ function goLens(l){
   updateBadges();
 }
 
+function rerenderActiveLens(){
+  if(activeLens==='stacks')renderStacks();
+  else if(activeLens==='duel')renderDuel();
+  else if(activeLens==='themes')renderThemes();
+  else if(activeLens==='timeline')renderTimeline();
+  else if(activeLens==='book')renderBook();
+  updateBadges();
+}
+
+function toggleShowIgnored(){
+  showIgnoredStacks=!showIgnoredStacks;
+  if(activeLens==='stacks')renderStacks();
+  if(activeLens==='duel')renderDuel();
+  if(activeLens==='themes')renderThemes();
+  if(activeLens==='timeline')renderTimeline();
+  if(activeLens==='book')renderBook();
+  updateBadges();
+}
+
+function showMoreStacks(){stacksWindow+=STACKS_WINDOW_STEP;renderStacks();}
+function showAllStacks(){stacksWindow=Number.MAX_SAFE_INTEGER;renderStacks();}
+function showMoreTimeline(){timelineWindow+=TIMELINE_WINDOW_STEP;renderTimeline();}
+function showAllTimeline(){timelineWindow=Number.MAX_SAFE_INTEGER;renderTimeline();}
+function showMoreThemeStacks(tid){themeWindowById[tid]=getThemeWindow(tid)+THEME_WINDOW_STEP;renderThemes();}
+function showAllThemeStacks(tid){themeWindowById[tid]=Number.MAX_SAFE_INTEGER;renderThemes();}
+function showMorePool(){poolWindow+=THEME_WINDOW_STEP;renderThemes();}
+function showAllPool(){poolWindow=Number.MAX_SAFE_INTEGER;renderThemes();}
+function showMoreBookPages(tid){bookPagesWindowByTheme[tid]=getBookPagesWindow(tid)+BOOK_PAGES_WINDOW_STEP;renderPagesRow(tid);}
+function showAllBookPages(tid){bookPagesWindowByTheme[tid]=Number.MAX_SAFE_INTEGER;renderPagesRow(tid);}
+function showMoreBookPhotos(tid){bookPhotosWindowByTheme[tid]=getBookPhotosWindow(tid)+BOOK_PHOTOS_WINDOW_STEP;renderPPList(tid);}
+function showAllBookPhotos(tid){bookPhotosWindowByTheme[tid]=Number.MAX_SAFE_INTEGER;renderPPList(tid);}
+
 function renderStacks(){
   const g=document.getElementById('stacks-grid');g.innerHTML='';
-  if(!STACKS.length){
+  const ordered = prioritizedVisibleStacks();
+  if(!ordered.length){
     g.innerHTML='<div class=\"section-meta\">No stacks yet. Upload files to begin.</div>';
     return;
   }
-  STACKS.forEach(s=>{
+  const shownStacks = ordered.slice(0,Math.max(1,stacksWindow));
+  shownStacks.forEach(s=>{
     const res=resolved(s);
     const pick=getPick(s.id);
     const theme=themeOf(s.id);
     const card=document.createElement('div');
-    card.className='stack-card '+(res?'resolved':'unresolved');
+    card.className='stack-card '+(res?'resolved':'unresolved')+(s.ignored?' ignored':'');
     card.onclick=()=>openStack(s.id);
     let fanHTML='';
     const count=s.photos.length;
@@ -435,6 +535,49 @@ function renderStacks(){
     </div>`;
     g.appendChild(card);
   });
+  const row=document.createElement('div');
+  row.style.gridColumn='1 / -1';
+  row.innerHTML=renderLimitRow({
+    shown:shownStacks.length,
+    total:ordered.length,
+    onMore:'showMoreStacks()',
+    onAll:'showAllStacks()',
+    label:'stacks',
+  });
+  if(row.innerHTML)g.appendChild(row);
+}
+
+async function toggleIgnoreStack(){
+  if(!openStackId)return;
+  const current=getS(openStackId);
+  const nextIgnored=!Boolean(current?.ignored);
+  const result=await api.ignoreStack(openStackId,nextIgnored);
+  if(!result.ok){
+    showToast('Could not update ignore state');
+    return;
+  }
+  await syncModelFromApi();
+  if(nextIgnored && !showIgnoredStacks){
+    closeModal();
+  }else{
+    openStack(openStackId);
+  }
+  rerenderActiveLens();
+  showToast(nextIgnored?'Stack ignored':'Stack restored');
+}
+
+async function deleteCurrentStack(){
+  if(!openStackId)return;
+  const target=openStackId;
+  const result=await api.deleteStack(target);
+  if(!result.ok){
+    showToast('Delete failed');
+    return;
+  }
+  closeModal();
+  await syncModelFromApi();
+  rerenderActiveLens();
+  showToast('Stack deleted');
 }
 
 function openStack(sid){
@@ -479,7 +622,11 @@ function updateSMFoot(){
   const splitBtn=document.getElementById('sm-split');
   const splitToggle=document.getElementById('sm-split-mode');
   const confirmBtn=document.getElementById('sm-confirm');
+  const ignoreBtn=document.getElementById('sm-ignore');
   const openStack=getS(openStackId);
+  if(ignoreBtn && openStack){
+    ignoreBtn.textContent=openStack.ignored?'Unignore stack':'Ignore stack';
+  }
   if(splitMode){
     const count=splitSelection.size;
     const total=openStack?openStack.photos.length:0;
@@ -560,7 +707,7 @@ async function splitSelected(){
 function closeModal(){document.getElementById('stack-modal').style.display='none';hideInspectPreview();setInspectSequence([], 'generic');openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
 
 function buildDuelStacks(){
-  return STACKS
+  return visibleStacks()
     .filter(s=>!resolved(s)&&s.photos.length>1)
     .sort((a,b)=>Number(Boolean(b.needsReview))-Number(Boolean(a.needsReview)));
 }
@@ -651,12 +798,17 @@ function skipDuel(){duelIdx=(duelIdx+1)%Math.max(duelStacks.length,1);renderDuel
 function renderThemes(){
   const canvas=document.getElementById('themes-canvas');canvas.innerHTML='';
   const pool=document.getElementById('pool-chips');pool.innerHTML='';
+  const visibleIds=visibleStackIds();
   themes.forEach(t=>{
+    const orderedStacks=t.stacks
+      .filter((sid)=>visibleIds.has(String(sid)))
+      .sort((a,b)=>compareStackPriority(getS(a),getS(b)));
+    const shownStacks=orderedStacks.slice(0,getThemeWindow(t.id));
     const block=document.createElement('div');block.className='theme-block';block.dataset.tid=t.id;
     block.innerHTML=`<div class="theme-head">
       <div class="theme-color-dot" style="background:${t.color}"></div>
       <input class="theme-title-inp" value="${t.title}" onchange="renameTheme('${t.id}',this.value)"/>
-      <span class="theme-count">${t.stacks.length} stack${t.stacks.length!==1?'s':''}</span>
+      <span class="theme-count">${orderedStacks.length} stack${orderedStacks.length!==1?'s':''}</span>
       <button class="ibc" onclick="goLens('book');setActiveTheme('${t.id}')">→ book</button>
       <button class="ibc del" onclick="delTheme('${t.id}')">✕</button>
     </div>
@@ -664,13 +816,48 @@ function renderThemes(){
     <div class="drop-target" id="dt-${t.id}" ondragover="dov(event,'${t.id}')" ondrop="ddr(event,'${t.id}')" ondragleave="dlv(event)">Drop stacks here</div>`;
     canvas.appendChild(block);
     const chipsEl=block.querySelector(`#tc-${t.id}`);
-    t.stacks.forEach(sid=>chipsEl.appendChild(makeChip(sid,t.id)));
+    shownStacks.forEach(sid=>chipsEl.appendChild(makeChip(sid,t.id)));
+    if(!shownStacks.length){
+      chipsEl.innerHTML='<span style="font-size:12px;color:var(--color-text-tertiary)">No visible stacks</span>';
+    }
+    const dropEl=block.querySelector(`#dt-${t.id}`);
+    if(dropEl){
+      dropEl.insertAdjacentHTML(
+        'afterend',
+        renderLimitRow({
+          shown:shownStacks.length,
+          total:orderedStacks.length,
+          onMore:`showMoreThemeStacks('${t.id}')`,
+          onAll:`showAllThemeStacks('${t.id}')`,
+          label:'stacks',
+        }),
+      );
+    }
   });
   const addBtn=document.createElement('div');addBtn.className='add-theme-row';
   addBtn.innerHTML=`<button class="add-theme-btn" onclick="addTheme()">+ New theme</button>`;
   canvas.appendChild(addBtn);
-  unassigned.forEach(sid=>pool.appendChild(makeChip(sid,'pool')));
-  if(!unassigned.length)pool.innerHTML=`<span style="font-size:12px;color:var(--color-text-tertiary)">All assigned</span>`;
+  const orderedPool=unassigned
+    .filter((sid)=>visibleIds.has(String(sid)))
+    .sort((a,b)=>compareStackPriority(getS(a),getS(b)));
+  const shownPool=orderedPool.slice(0,Math.max(1,poolWindow));
+  shownPool.forEach(sid=>pool.appendChild(makeChip(sid,'pool')));
+  if(!shownPool.length)pool.innerHTML=`<span style="font-size:12px;color:var(--color-text-tertiary)">All assigned</span>`;
+  const poolBox=document.getElementById('pool-box');
+  if(poolBox){
+    const existing=poolBox.querySelector('.lens-limit-row');
+    if(existing)existing.remove();
+    poolBox.insertAdjacentHTML(
+      'beforeend',
+      renderLimitRow({
+        shown:shownPool.length,
+        total:orderedPool.length,
+        onMore:'showMorePool()',
+        onAll:'showAllPool()',
+        label:'stacks',
+      }),
+    );
+  }
 }
 
 function makeChip(sid,from){
@@ -741,8 +928,9 @@ async function addTheme(){
 
 function renderTimeline(){
   const wrap=document.getElementById('timeline-wrap');wrap.innerHTML='';
+  const ordered=prioritizedVisibleStacks().slice(0,Math.max(1,timelineWindow));
   const byMonth={};
-  STACKS.forEach(s=>{
+  ordered.forEach(s=>{
     const d=new Date(s.date);const key=d.toLocaleString('default',{month:'long',year:'numeric'});
     if(!byMonth[key])byMonth[key]=[];
     byMonth[key].push(s);
@@ -769,6 +957,16 @@ function renderTimeline(){
     });
     sec.appendChild(row);wrap.appendChild(sec);
   });
+  wrap.insertAdjacentHTML(
+    'beforeend',
+    renderLimitRow({
+      shown:ordered.length,
+      total:visibleStacks().length,
+      onMore:'showMoreTimeline()',
+      onAll:'showAllTimeline()',
+      label:'stacks',
+    }),
+  );
 }
 
 function renderBook(){
@@ -782,11 +980,13 @@ function renderBook(){
 }
 function renderBookNav(){
   const nav=document.getElementById('book-nav');nav.innerHTML='<div class="book-nav-head">Themes</div>';
+  const visibleIds=visibleStackIds();
   themes.forEach(t=>{
+    const visibleThemeCount=t.stacks.filter((sid)=>visibleIds.has(String(sid))).length;
     const pg=(pages[t.id]||[]).length;
     const item=document.createElement('div');
     item.className='book-nav-item'+(activeThemeId===t.id?' active':'');
-    item.innerHTML=`<div style="display:flex;align-items:center;gap:6px"><div style="width:8px;height:8px;border-radius:50%;background:${t.color};flex-shrink:0"></div>${t.title}</div><div class="book-nav-sub">${pg} page${pg!==1?'s':''}</div>`;
+    item.innerHTML=`<div style="display:flex;align-items:center;gap:6px"><div style="width:8px;height:8px;border-radius:50%;background:${t.color};flex-shrink:0"></div>${t.title}</div><div class="book-nav-sub">${pg} page${pg!==1?'s':''} · ${visibleThemeCount} stack${visibleThemeCount!==1?'s':''}</div>`;
     item.onclick=()=>setActiveTheme(t.id);
     nav.appendChild(item);
   });
@@ -804,7 +1004,9 @@ function setActiveTheme(tid){
 }
 function renderPagesRow(tid){
   const row=document.getElementById('pages-row');row.innerHTML='';
-  (pages[tid]||[]).forEach(pg=>{
+  const allPages=(pages[tid]||[]);
+  const shownPages=allPages.slice(0,getBookPagesWindow(tid));
+  shownPages.forEach(pg=>{
     const card=document.createElement('div');card.className='pg-thumb'+(activePage===pg.id?' active-pg':'');
     const sl=slots[pg.id]||[];const lay=pg.layout||'2x2';
     const n=lay==='1x1'?1:lay==='2x1'?2:lay==='1+2'?3:4;
@@ -824,6 +1026,16 @@ function renderPagesRow(tid){
   const add=document.createElement('button');add.className='add-pg';
   add.innerHTML=`<div style="width:24px;height:24px;border-radius:50%;border:1.5px solid var(--color-border-secondary);display:flex;align-items:center;justify-content:center;font-size:15px;color:var(--color-text-tertiary)">+</div><span>Add page</span>`;
   add.onclick=()=>addPage(tid);row.appendChild(add);
+  row.insertAdjacentHTML(
+    'beforeend',
+    renderLimitRow({
+      shown:shownPages.length,
+      total:allPages.length,
+      onMore:`showMoreBookPages('${tid}')`,
+      onAll:`showAllBookPages('${tid}')`,
+      label:'pages',
+    }),
+  );
 }
 async function addPage(tid){
   const chapterId=await ensureThemeChapter(tid);
@@ -899,7 +1111,12 @@ function setLay(lay,btn){
 function renderPPList(tid){
   const t=themes.find(x=>x.id===tid);const list=document.getElementById('pp-list');list.innerHTML='';
   if(!t)return;
-  t.stacks.forEach(sid=>{
+  const visibleIds=visibleStackIds();
+  const ordered=t.stacks
+    .filter((sid)=>visibleIds.has(String(sid)))
+    .sort((a,b)=>compareStackPriority(getS(a),getS(b)));
+  const shown=ordered.slice(0,getBookPhotosWindow(tid));
+  shown.forEach(sid=>{
     const pick=getPick(sid);const s=getS(sid);if(!pick)return;
     const el=document.createElement('div');el.className='pp-item';el.draggable=true;
     el.innerHTML=`<div class="pp-img" style="${photoStyle(pick)}display:flex;align-items:flex-end;padding:3px"><span style="font-size:8px;color:rgba(0,0,0,.35)">${escAttr(pick.label)}</span></div>
@@ -907,6 +1124,19 @@ function renderPPList(tid){
     el.ondragstart=e=>e.dataTransfer.setData('pid',pick.id);
     list.appendChild(el);
   });
+  if(!shown.length){
+    list.innerHTML='<span style="font-size:12px;color:var(--color-text-tertiary)">No visible theme photos</span>';
+  }
+  list.insertAdjacentHTML(
+    'beforeend',
+    renderLimitRow({
+      shown:shown.length,
+      total:ordered.length,
+      onMore:`showMoreBookPhotos('${tid}')`,
+      onAll:`showAllBookPhotos('${tid}')`,
+      label:'photos',
+    }),
+  );
 }
 async function addTxt(){
   if(!activeThemeId)return;
@@ -1048,12 +1278,16 @@ function stopUploadTipRotation(){
   }
 }
 
+function stopUploadIdleCountdown(){
+  if(uploadIdleCountdownTimer!==null){
+    clearTimeout(uploadIdleCountdownTimer);
+    uploadIdleCountdownTimer=null;
+  }
+}
+
 function resetUploadTipState(){
   stopUploadTipRotation();
-  if(uploadIdleWatchTimer!==null){
-    clearInterval(uploadIdleWatchTimer);
-    uploadIdleWatchTimer=null;
-  }
+  stopUploadIdleCountdown();
   uploadIdleActive=false;
   uploadTipPhase='uploading';
   uploadLastRealUpdateAt=0;
@@ -1071,22 +1305,23 @@ function beginUploadIdleModeIfNeeded(){
   if(uploadIdleActive)return;
   uploadIdleActive=true;
   nextUploadTip();
+  stopUploadTipRotation();
   uploadTipRotateTimer=setInterval(()=>{
     if(!uploadIdleActive)return;
     nextUploadTip();
   },UPLOAD_IDLE_TIP_ROTATE_MS);
 }
 
-function ensureUploadIdleWatcher(){
-  if(uploadIdleWatchTimer!==null)return;
-  uploadIdleWatchTimer=setInterval(()=>{
-    const overlay=document.getElementById('upload-progress-overlay');
-    if(!overlay || overlay.style.display!=='flex')return;
-    if(uploadIdleActive)return;
-    if(!uploadLastRealUpdateAt)return;
-    if(Date.now()-uploadLastRealUpdateAt<UPLOAD_IDLE_TIP_DELAY_MS)return;
+function scheduleUploadIdleCountdown(){
+  stopUploadIdleCountdown();
+  const overlay=document.getElementById('upload-progress-overlay');
+  if(!overlay || overlay.style.display!=='flex')return;
+  uploadIdleCountdownTimer=setTimeout(()=>{
+    uploadIdleCountdownTimer=null;
+    const liveOverlay=document.getElementById('upload-progress-overlay');
+    if(!liveOverlay || liveOverlay.style.display!=='flex')return;
     beginUploadIdleModeIfNeeded();
-  },500);
+  },UPLOAD_IDLE_TIP_DELAY_MS);
 }
 
 function applyUploadActivityState({phase,isRealUpdate,failed}){
@@ -1094,12 +1329,17 @@ function applyUploadActivityState({phase,isRealUpdate,failed}){
   if(isRealUpdate){
     uploadLastRealUpdateAt=Date.now();
     exitUploadIdleMode();
+    if(!(failed || phase==='completed' || phase==='failed')){
+      scheduleUploadIdleCountdown();
+    }
   }
   if(failed || phase==='completed' || phase==='failed'){
     resetUploadTipState();
     return;
   }
-  ensureUploadIdleWatcher();
+  if(!isRealUpdate){
+    scheduleUploadIdleCountdown();
+  }
 }
 
 function showUploadOverlay(title,detail,percent,{failed=false,phase='working',isRealUpdate=false,batchLabel='Batch 1/1',batchPercent=0}={}){
@@ -1402,6 +1642,7 @@ Object.assign(window,{
   dov,
   doUpload,
   doReset,
+  deleteCurrentStack,
   goLens,
   openShare,
   openStack,
@@ -1413,6 +1654,20 @@ Object.assign(window,{
   setLay,
   skipDuel,
   splitSelected,
+  showAllBookPages,
+  showAllBookPhotos,
+  showAllPool,
+  showAllStacks,
+  showAllThemeStacks,
+  showAllTimeline,
+  showMoreBookPages,
+  showMoreBookPhotos,
+  showMorePool,
+  showMoreStacks,
+  showMoreThemeStacks,
+  showMoreTimeline,
+  toggleIgnoreStack,
+  toggleShowIgnored,
   toggleSplitMode,
 });
 

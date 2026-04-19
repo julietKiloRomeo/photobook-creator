@@ -26,6 +26,7 @@ from photobook.project_store import (
     create_page_item,
     create_theme,
     create_upload_operation,
+    delete_stack_with_references,
     delete_theme,
     ensure_schema,
     get_cluster_state,
@@ -50,6 +51,7 @@ from photobook.project_store import (
     reference_exists,
     reorder_chapters,
     set_cluster_state,
+    set_stack_ignored,
     split_stack_cluster,
     sync_pages_for_chapter,
     theme_exists,
@@ -160,6 +162,10 @@ class StackSplitRequest(BaseModel):
     label: str | None = None
 
 
+class StackIgnoreRequest(BaseModel):
+    ignored: bool = True
+
+
 def _root_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -265,6 +271,25 @@ def _reference_image_response(db_path: Path, reference_id: int) -> FileResponse:
 
     media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     return FileResponse(path, media_type=media_type)
+
+
+def _delete_paths(paths: list[str]) -> int:
+    removed = 0
+    for raw in paths:
+        try:
+            path = Path(raw)
+            if not path.exists():
+                continue
+            if path.is_file():
+                path.unlink()
+                removed += 1
+                continue
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def create_app() -> FastAPI:
@@ -770,6 +795,36 @@ def create_app() -> FastAPI:
             set_cluster_state(ctx["db_path"], "final", None)
         return JSONResponse(_stack_payload(ctx["db_path"]))
 
+    @app.post("/api/projects/{project_id}/stacks/{stack_id}/ignore")
+    def post_project_stack_ignore(project_id: str, stack_id: str, payload: StackIgnoreRequest) -> JSONResponse:
+        ctx = _ctx(project_id)
+        if not set_stack_ignored(ctx["db_path"], stack_id, bool(payload.ignored)):
+            raise HTTPException(status_code=404, detail="Stack not found")
+        return JSONResponse({"status": "ok", "stack_id": stack_id, "ignored": bool(payload.ignored), **_stack_payload(ctx["db_path"])})
+
+    @app.delete("/api/projects/{project_id}/stacks/{stack_id}")
+    def delete_project_stack(project_id: str, stack_id: str) -> JSONResponse:
+        ctx = _ctx(project_id)
+        try:
+            summary = delete_stack_with_references(ctx["db_path"], stack_id)
+        except ValueError as exc:
+            if str(exc) == "stack_not_found":
+                raise HTTPException(status_code=404, detail="Stack not found") from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        removed_files = _delete_paths(summary.get("derived_paths", []) + summary.get("original_paths", []))
+        return JSONResponse(
+            {
+                "status": "ok",
+                "deleted": {
+                    "stack_id": stack_id,
+                    "references": len(summary.get("reference_ids", [])),
+                    "files_removed": removed_files,
+                },
+                **_stack_payload(ctx["db_path"]),
+            }
+        )
+
     @app.post("/api/projects/{project_id}/stacks/{stack_id}/split")
     def post_project_stack_split(project_id: str, stack_id: str, payload: StackSplitRequest) -> JSONResponse:
         ctx = _ctx(project_id)
@@ -972,6 +1027,36 @@ def create_app() -> FastAPI:
         if mark_stale_upload_operations(ctx["db_path"]) > 0:
             set_cluster_state(ctx["db_path"], "final", None)
         return JSONResponse(_stack_payload(ctx["db_path"]))
+
+    @app.post("/api/stacks/{stack_id}/ignore")
+    def post_stack_ignore(stack_id: str, payload: StackIgnoreRequest) -> JSONResponse:
+        ctx = _ctx(None)
+        if not set_stack_ignored(ctx["db_path"], stack_id, bool(payload.ignored)):
+            raise HTTPException(status_code=404, detail="Stack not found")
+        return JSONResponse({"status": "ok", "stack_id": stack_id, "ignored": bool(payload.ignored), **_stack_payload(ctx["db_path"])})
+
+    @app.delete("/api/stacks/{stack_id}")
+    def delete_stack(stack_id: str) -> JSONResponse:
+        ctx = _ctx(None)
+        try:
+            summary = delete_stack_with_references(ctx["db_path"], stack_id)
+        except ValueError as exc:
+            if str(exc) == "stack_not_found":
+                raise HTTPException(status_code=404, detail="Stack not found") from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        removed_files = _delete_paths(summary.get("derived_paths", []) + summary.get("original_paths", []))
+        return JSONResponse(
+            {
+                "status": "ok",
+                "deleted": {
+                    "stack_id": stack_id,
+                    "references": len(summary.get("reference_ids", [])),
+                    "files_removed": removed_files,
+                },
+                **_stack_payload(ctx["db_path"]),
+            }
+        )
 
     @app.post("/api/stacks/{stack_id}/split")
     def post_stack_split(stack_id: str, payload: StackSplitRequest) -> JSONResponse:

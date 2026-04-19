@@ -38,6 +38,9 @@
     <button class="upload-btn" onclick="doReset()" title="Testing reset">
       Reset
     </button>
+    <button class="upload-btn" id="ignored-toggle-btn" onclick="toggleShowIgnored()" title="Toggle ignored stacks">
+      Ignored: hidden
+    </button>
     <div class="avatar" style="background:#EEEDFE;color:#3C3489">YO</div>
     <div class="avatar" style="background:#E1F5EE;color:#085041;margin-left:-6px;border:1.5px solid var(--color-background-primary)">MK</div>
     <div class="avatar" style="background:#FAECE7;color:#712B13;margin-left:-6px;border:1.5px solid var(--color-background-primary)">JL</div>
@@ -150,6 +153,8 @@
     <div class="modal-foot">
       <span style="font-size:12px;color:var(--color-text-tertiary)" id="sm-sel-label">None selected</span>
       <div style="display:flex;gap:8px">
+        <button class="btn-s" id="sm-ignore" onclick="toggleIgnoreStack()">Ignore stack</button>
+        <button class="btn-s btn-s-danger" id="sm-delete" onclick="deleteCurrentStack()">Delete stack</button>
         <button class="btn-s" id="sm-split-mode" onclick="toggleSplitMode()">Split mode</button>
         <button class="btn-s" id="sm-split" onclick="splitSelected()" disabled>Split selected</button>
         <button class="btn-s" onclick="closeModal()">Cancel</button>

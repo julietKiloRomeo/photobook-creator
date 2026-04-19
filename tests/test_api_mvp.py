@@ -426,3 +426,75 @@ def test_delete_project_endpoint_removes_project_and_storage(tmp_path, monkeypat
 
     remove_again = client.delete(f"/api/projects/{project_id}")
     assert remove_again.status_code == 404
+
+
+def test_stack_ignore_and_delete_endpoints(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+
+    project = client.post("/api/projects", json={"name": "Stack Actions"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    image_a = Image.new("RGB", (40, 30), color=(12, 44, 99))
+    image_b = Image.new("RGB", (40, 30), color=(12, 44, 99))
+    path_a = tmp_path / "stack_action_a.jpg"
+    path_b = tmp_path / "stack_action_b.jpg"
+    image_a.save(path_a)
+    image_b.save(path_b)
+
+    seed = client.post(
+        f"/api/projects/{project_id}/intake/references",
+        json={
+            "items": [
+                {"source": str(path_a), "source_type": "path", "label": "A", "metadata": {}},
+                {"source": str(path_b), "source_type": "path", "label": "B", "metadata": {}},
+            ]
+        },
+    )
+    assert seed.status_code == 200
+
+    process = client.post(f"/api/projects/{project_id}/process", json={})
+    assert process.status_code == 200
+    stacks = client.get(f"/api/projects/{project_id}/stacks")
+    assert stacks.status_code == 200
+    items = stacks.json()["items"]
+    assert items
+    target = items[0]
+    stack_id = str(target["id"])
+    reference_ids = [int(item) for item in target["photo_ids"]]
+
+    ignored = client.post(
+        f"/api/projects/{project_id}/stacks/{stack_id}/ignore",
+        json={"ignored": True},
+    )
+    assert ignored.status_code == 200
+    ignored_item = next((item for item in ignored.json()["items"] if str(item["id"]) == stack_id), None)
+    assert ignored_item is not None
+    assert ignored_item["ignored"] is True
+
+    unignored = client.post(
+        f"/api/projects/{project_id}/stacks/{stack_id}/ignore",
+        json={"ignored": False},
+    )
+    assert unignored.status_code == 200
+    unignored_item = next((item for item in unignored.json()["items"] if str(item["id"]) == stack_id), None)
+    assert unignored_item is not None
+    assert unignored_item["ignored"] is False
+
+    deleted = client.delete(f"/api/projects/{project_id}/stacks/{stack_id}")
+    assert deleted.status_code == 200
+    payload = deleted.json()
+    assert payload["status"] == "ok"
+    assert payload["deleted"]["stack_id"] == stack_id
+    assert payload["deleted"]["references"] >= 1
+
+    stacks_after = payload["items"]
+    assert all(str(item["id"]) != stack_id for item in stacks_after)
+
+    refs_after = client.get(f"/api/projects/{project_id}/intake/references")
+    assert refs_after.status_code == 200
+    remaining_ids = {int(item["id"]) for item in refs_after.json()["items"]}
+    assert all(ref_id not in remaining_ids for ref_id in reference_ids)
+
+    # At least one source file from the deleted stack should be removed from disk.
+    assert not (path_a.exists() and path_b.exists())

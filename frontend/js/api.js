@@ -67,6 +67,19 @@ export const api = {
     });
   },
 
+  ignoreStack(stackId, ignored = true) {
+    return request(`/stacks/${encodeURIComponent(stackId)}/ignore`, {
+      method: 'POST',
+      body: { ignored: Boolean(ignored) },
+    });
+  },
+
+  deleteStack(stackId) {
+    return request(`/stacks/${encodeURIComponent(stackId)}`, {
+      method: 'DELETE',
+    });
+  },
+
   pickDuel(payload) {
     return request('/duel/pick', {
       method: 'POST',

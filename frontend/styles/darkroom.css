@@ -22,6 +22,8 @@ body{
   margin:0;
   padding:20px;
   background:linear-gradient(180deg,#F2F5FA 0%,#E9EDF5 100%);
+  height:100vh;
+  overflow:hidden;
 }
 
 .sr-only{
@@ -37,7 +39,7 @@ body{
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
-.app{display:flex;flex-direction:column;background:var(--color-background-tertiary);border-radius:var(--border-radius-lg);border:0.5px solid var(--color-border-tertiary);overflow:hidden;font-family:var(--font-sans);min-height:640px}
+.app{display:flex;flex-direction:column;background:var(--color-background-tertiary);border-radius:var(--border-radius-lg);border:0.5px solid var(--color-border-tertiary);overflow:hidden;font-family:var(--font-sans);height:calc(100vh - 40px);max-height:calc(100vh - 40px);min-height:640px}
 .topbar{display:flex;align-items:center;gap:0;padding:0 16px;background:var(--color-background-primary);border-bottom:0.5px solid var(--color-border-tertiary);height:48px}
 .brand{font-size:15px;font-weight:500;color:var(--color-text-primary);margin-right:20px;white-space:nowrap}
 .brand em{color:#7F77DD;font-style:normal}
@@ -70,10 +72,12 @@ body{
 .prog-fill{height:100%;border-radius:2px;transition:width .4s}
 
 .stacks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+#panel-stacks .section-header{position:sticky;top:0;z-index:4;background:var(--color-background-tertiary);padding:2px 0 8px}
 .stack-card{background:var(--color-background-primary);border-radius:var(--border-radius-lg);border:0.5px solid var(--color-border-tertiary);overflow:hidden;cursor:pointer;transition:border-color .12s}
 .stack-card:hover{border-color:var(--color-border-secondary)}
 .stack-card.resolved{border-color:#1D9E75}
 .stack-card.unresolved{border-color:var(--color-border-tertiary)}
+.stack-card.ignored{opacity:.58;border-style:dashed}
 .stack-photo-area{height:120px;background:var(--color-background-secondary);position:relative;display:flex;align-items:center;justify-content:center}
 .stack-fan{position:relative;width:120px;height:90px}
 .fan-img{position:absolute;border-radius:5px;border:2px solid var(--color-background-primary)}
@@ -84,6 +88,30 @@ body{
 .stack-name{font-size:13px;font-weight:500;color:var(--color-text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stack-sub{font-size:11px;color:var(--color-text-tertiary);margin-top:2px;display:flex;align-items:center;gap:5px}
 .theme-pill{background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:8px;padding:1px 7px;font-size:10px;color:var(--color-text-secondary)}
+.lens-limit-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-top:6px;
+  padding:8px 10px;
+  border:0.5px solid var(--color-border-tertiary);
+  border-radius:var(--border-radius-md);
+  background:var(--color-background-primary);
+  font-size:12px;
+  color:var(--color-text-tertiary);
+}
+.lens-limit-actions{display:flex;align-items:center;gap:6px}
+.mini-btn{
+  border:0.5px solid var(--color-border-secondary);
+  background:var(--color-background-primary);
+  color:var(--color-text-secondary);
+  border-radius:var(--border-radius-md);
+  padding:4px 8px;
+  font-size:11px;
+  cursor:pointer;
+}
+.mini-btn:hover{background:var(--color-background-secondary);color:var(--color-text-primary)}
 
 .duel-wrap{display:flex;flex-direction:column;gap:14px;align-items:center}
 .duel-progress{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--color-text-tertiary);width:100%}
@@ -375,6 +403,8 @@ body{
 .btn-p:disabled{opacity:.4;cursor:default}
 .btn-s{padding:7px 13px;background:none;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);font-size:13px;cursor:pointer;color:var(--color-text-secondary);font-family:var(--font-sans)}
 .btn-s:hover{background:var(--color-background-secondary)}
+.btn-s-danger{border-color:var(--color-border-danger);color:var(--color-text-danger)}
+.btn-s-danger:hover{background:var(--color-background-danger)}
 
 .share-modal-body{padding:16px;display:flex;flex-direction:column;gap:14px}
 .share-url-row{display:flex;gap:8px}
