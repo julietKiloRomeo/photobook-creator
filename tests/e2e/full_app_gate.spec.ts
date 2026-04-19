@@ -56,6 +56,7 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
     const themeCountBefore = await page.locator('#themes-canvas .theme-block').count();
     await page.locator('#panel-themes .section-header .btn-p').click();
     await expect(page.locator('#themes-canvas .theme-block')).toHaveCount(themeCountBefore + 1);
+    await expect(page.locator('#panel-themes .theme-stack-card .tl-thumb').first()).toBeVisible();
   });
 
   await test.step('Timeline: open timeline lens', async () => {

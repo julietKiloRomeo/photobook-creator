@@ -1063,6 +1063,8 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
         picked_reference = picks.get(stack.id)
         if picked_reference is not None and all(ref.id != picked_reference for ref in stack.references):
             picked_reference = None
+        if picked_reference is None and len(stack.references) == 1:
+            picked_reference = stack.references[0].id
 
         theme_id = theme_map.get(stack.id)
         theme = themes.get(theme_id) if theme_id is not None else None

@@ -113,7 +113,7 @@ function applyStacksFromApi(items){
       id:String(item.id),
       label:item.label||`Stack ${item.id}`,
       photos,
-      pick:item.pick_reference_id?String(item.pick_reference_id):null,
+      pick:item.pick_reference_id != null ? String(item.pick_reference_id) : null,
       date:item.date||new Date().toISOString().slice(0,10),
     };
   });
@@ -474,11 +474,25 @@ function renderThemes(){
 
 function makeChip(sid,from){
   const s=getS(sid);if(!s)return document.createElement('span');
-  const theme=themeOf(sid);
-  const chip=document.createElement('div');chip.className='chip';chip.draggable=true;chip.dataset.sid=sid;chip.dataset.from=from;
-  chip.innerHTML=`<div class="chip-dot" style="background:${theme?theme.color:'var(--color-border-secondary)'}"></div>
-    <span class="chip-lbl">${s.label}</span>
-    <span class="chip-x" onclick="chipRemove('${sid}','${from}')">✕</span>`;
+  const pick=getPick(sid);
+  const day = Number.isNaN(new Date(s.date).getTime())
+    ? ''
+    : new Date(s.date).toLocaleDateString('default',{weekday:'short',day:'numeric'});
+  const isPool=from==='pool';
+  const res=resolved(s);
+  const chip=document.createElement('div');
+  chip.className=`theme-stack-card tl-card ${res?'resolved':'unresolved'}`;
+  chip.draggable=true;
+  chip.dataset.sid=sid;
+  chip.dataset.from=from;
+  chip.innerHTML=`<div class="tl-thumb" style="${photoStyle(pick)}"></div>
+    ${isPool?'<div class="theme-stack-badge">unassigned</div>':''}
+    <div class="tl-info">
+      <div class="tl-name">${escAttr(s.label)}</div>
+      <div style="font-size:10px;color:var(--color-text-tertiary);margin-top:1px">${escAttr(day)}</div>
+    </div>
+    ${isPool?'':`<button class="theme-stack-remove" title="Remove from theme" onclick="chipRemove(event,'${sid}','${from}')">✕</button>`}`;
+  chip.onclick=()=>openStack(sid);
   chip.ondragstart=e=>{dragSid=sid;dragFrom=from;chip.classList.add('dragging');};
   chip.ondragend=()=>{chip.classList.remove('dragging');clearDrop();};
   return chip;
@@ -497,7 +511,8 @@ function ddr(e,toTid){
   dragSid=null;dragFrom=null;
   renderThemes();updateBadges();
 }
-function chipRemove(sid,from){
+function chipRemove(event,sid,from){
+  event?.stopPropagation();
   if(from==='pool')return;
   const t=themes.find(x=>x.id===from);if(t)t.stacks=t.stacks.filter(x=>x!==sid);
   void api.assignTheme({stack_id:String(sid),theme_id:null});

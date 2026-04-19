@@ -155,6 +155,34 @@ def test_chapter_page_item_and_export_flow(tmp_path, monkeypatch) -> None:
     assert len(data["chapters"][0]["pages"][0]["items"]) == 2
 
 
+def test_single_photo_stack_is_auto_resolved(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    ingest = client.post(
+        "/api/intake/references",
+        json={
+            "items": [
+                {
+                    "source": "/photos/solo.jpg",
+                    "source_type": "path",
+                    "label": "Solo Shot",
+                    "metadata": {},
+                }
+            ]
+        },
+    )
+    assert ingest.status_code == 200
+    reference_id = int(ingest.json()["items"][0]["id"])
+
+    stacks = client.get("/api/stacks")
+    assert stacks.status_code == 200
+    items = stacks.json()["items"]
+    assert len(items) == 1
+    assert items[0]["photo_ids"] == [reference_id]
+    assert items[0]["pick_reference_id"] == reference_id
+    assert items[0]["resolved"] is True
+
+
 def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None:
     client = _project_client(tmp_path, monkeypatch)
 
@@ -230,6 +258,7 @@ def test_stack_split_endpoint(tmp_path, monkeypatch) -> None:
     stacks_res = client.get(f"/api/projects/{project_id}/stacks")
     assert stacks_res.status_code == 200
     stacks = stacks_res.json()["items"]
+    assert all(not str(item["label"]).lower().endswith(" set") for item in stacks)
     target = next((item for item in stacks if len(item["photo_ids"]) > 1), None)
     assert target is not None
 

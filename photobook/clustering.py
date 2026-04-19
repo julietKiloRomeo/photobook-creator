@@ -282,7 +282,7 @@ def _stack_id(reference_ids: list[int], *, salt: str = "") -> str:
 
 def _build_stack_label(signatures: list[Signature], fallback: str) -> str:
     tokens = Counter(token for sig in signatures for token in _tokenize(sig.label))
-    return f"{(tokens.most_common(1)[0][0].title() if tokens else fallback)} set"
+    return tokens.most_common(1)[0][0].title() if tokens else fallback
 
 
 def _partition_signatures(signatures: list[Signature]) -> list[list[Signature]]:
