@@ -53,10 +53,10 @@ let slots={};
 let pgCtr=0;
 let curLayout='2x2';
 let dragSid=null,dragFrom=null;
-let uploadProgressPercent=0;
 let clusterState={state:'final',operation_id:null};
 const chapterByTheme={};
 const chapterEnsurePromises={};
+const UPLOAD_BATCH_SIZE = 100;
 const UPLOAD_IDLE_TIP_DELAY_MS = 5000;
 const UPLOAD_IDLE_TIP_ROTATE_MS = 2800;
 const UPLOAD_IDLE_TIPS = {
@@ -98,6 +98,9 @@ let uploadIdleActive = false;
 let uploadTipPhase = 'uploading';
 let uploadTipIndexByPhase = Object.create(null);
 let uploadLastTipText = '';
+let inspectSequenceIds = [];
+let inspectSequenceIndex = 0;
+let inspectMode = 'generic';
 const PROJECT_ID = (() => {
   const match = window.location.pathname.match(/^\/darkroom\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -144,6 +147,14 @@ function ensureInspectPreview(){
   return overlay;
 }
 
+function setInspectSequence(ids,mode='generic'){
+  inspectSequenceIds=(ids||[]).map((id)=>String(id)).filter((id)=>Boolean(getP(id)));
+  inspectMode=mode;
+  if(inspectSequenceIndex>=inspectSequenceIds.length){
+    inspectSequenceIndex=0;
+  }
+}
+
 function showInspectPreview(photo){
   if(!photo?.url)return;
   const overlay=ensureInspectPreview();
@@ -151,6 +162,10 @@ function showInspectPreview(photo){
   const cap=document.getElementById('inspect-preview-caption');
   if(img)img.src=String(photo.url);
   if(cap)cap.textContent=photo.label||'';
+  const idx=inspectSequenceIds.indexOf(String(photo.id));
+  if(idx>=0){
+    inspectSequenceIndex=idx;
+  }
   overlay.classList.add('show');
 }
 
@@ -164,6 +179,47 @@ function bindInspectHover(element,photo){
   if(!element || !photo?.url)return;
   element.addEventListener('mouseenter',()=>showInspectPreview(photo));
   element.addEventListener('mouseleave',hideInspectPreview);
+}
+
+function bindDuelInspect(element,pid){
+  if(!element)return;
+  element.addEventListener('mouseenter',()=>{
+    const photo=getP(pid);
+    if(photo)showInspectPreview(photo);
+  });
+  element.addEventListener('contextmenu',(event)=>{
+    event.preventDefault();
+    cycleInspectDuel(1);
+  });
+}
+
+function cycleInspectDuel(step=1,event){
+  event?.preventDefault();
+  if(inspectMode!=='duel' || inspectSequenceIds.length<2)return;
+  inspectSequenceIndex=(inspectSequenceIndex+step+inspectSequenceIds.length)%inspectSequenceIds.length;
+  const pid=inspectSequenceIds[inspectSequenceIndex];
+  const photo=pid?getP(pid):null;
+  if(photo){
+    showInspectPreview(photo);
+  }
+}
+
+function handleInspectKeys(event){
+  const overlay=document.getElementById('inspect-preview');
+  if(!overlay || !overlay.classList.contains('show'))return;
+  if(event.key==='Escape'){
+    event.preventDefault();
+    hideInspectPreview();
+    return;
+  }
+  if(inspectMode!=='duel')return;
+  if(event.key==='ArrowRight' || event.key==='Tab'){
+    cycleInspectDuel(1,event);
+    return;
+  }
+  if(event.key==='ArrowLeft'){
+    cycleInspectDuel(-1,event);
+  }
 }
 
 function normalizePhoto(photo){
@@ -321,6 +377,7 @@ function updateBadges(){
 
 function goLens(l){
   hideInspectPreview();
+  setInspectSequence([], 'generic');
   if((l==='themes' || l==='book') && !isClusterFinal()){
     showToast('Refining stacks... Themes and Book are temporarily locked');
     return;
@@ -382,6 +439,7 @@ function renderStacks(){
 
 function openStack(sid){
   const s=getS(sid);if(!s)return;
+  setInspectSequence([], 'generic');
   openStackId=sid;tempPick=s.pick||s.previousPick;
   splitMode=false;
   splitSelection=new Set();
@@ -499,7 +557,7 @@ async function splitSelected(){
   duelStacks=buildDuelStacks();
   showToast('Stack split');
 }
-function closeModal(){document.getElementById('stack-modal').style.display='none';hideInspectPreview();openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
+function closeModal(){document.getElementById('stack-modal').style.display='none';hideInspectPreview();setInspectSequence([], 'generic');openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
 
 function buildDuelStacks(){
   return STACKS
@@ -508,9 +566,11 @@ function buildDuelStacks(){
 }
 
 function renderDuel(){
+  hideInspectPreview();
   duelStacks=buildDuelStacks();
   const wrap=document.getElementById('duel-wrap');wrap.innerHTML='';
   if(duelStacks.length===0){
+    setInspectSequence([], 'generic');
     wrap.innerHTML=`<div class="duel-done"><div class="done-icon">✓</div><div class="done-title">All stacks resolved</div><div class="done-sub">Head to Themes or Book to continue</div></div>`;
     return;
   }
@@ -527,6 +587,7 @@ function renderDuel(){
     pairB=candidate||s.photos.find((pid)=>pid!==pairA)||pairB;
   }
   const pA=getP(pairA),pB=getP(pairB);
+  setInspectSequence([pairA,pairB],'duel');
   const votesA=Object.values(votes).filter(v=>v===pairA).length;
   const votesB=Object.values(votes).filter(v=>v===pairB).length;
   const pickedA=s.pick===pairA,pickedB=s.pick===pairB;
@@ -559,6 +620,10 @@ function renderDuel(){
   </div>
   <div class="duel-stack-name">${s.label}</div>
   <div class="duel-hint">${s.needsReview?'New photos joined this stack. Confirm or replace the previous winner.':'Tap the photo you\'d pick for this stack'}</div>
+  <div class="duel-compare-row">
+    <button class="duel-compare-switch" type="button" onclick="cycleInspectDuel(1,event)" title="Switch preview">⇄</button>
+    <span>Hover either photo, then use Tab/←/→ or right-click to switch.</span>
+  </div>
   <div class="duel-arena">
     ${cardHTML(pairA,pA,pickedA,pickedB,votesA,collabAvatars)}
     <div class="duel-vs"><div class="vs-circle">vs</div></div>
@@ -568,8 +633,7 @@ function renderDuel(){
   wrap.querySelectorAll('.duel-img').forEach((el)=>{
     const pid=el.getAttribute('data-pid');
     if(!pid)return;
-    const photo=getP(pid);
-    if(photo)bindInspectHover(el,photo);
+    bindDuelInspect(el,pid);
   });
 }
 
@@ -917,6 +981,29 @@ function uploadStageDetail(progress){
   return progress?.message||'Working...';
 }
 
+function chunkEntries(entries,size){
+  if(!Array.isArray(entries) || !entries.length)return [];
+  const safeSize=Math.max(1,Math.floor(size||1));
+  const out=[];
+  for(let i=0;i<entries.length;i+=safeSize){
+    out.push(entries.slice(i,i+safeSize));
+  }
+  return out;
+}
+
+function overallPercentForBatch(batchIndex,batchTotal,batchPercent){
+  const total=Math.max(1,Number(batchTotal||1));
+  const idx=Math.max(0,Math.min(total-1,Number(batchIndex||0)));
+  const frac=Math.max(0,Math.min(1,(Number(batchPercent||0))/100));
+  return Math.round(((idx+frac)/total)*100);
+}
+
+function batchLabelFor(batchIndex,batchTotal){
+  const total=Math.max(1,Number(batchTotal||1));
+  const idx=Math.max(0,Math.min(total-1,Number(batchIndex||0)));
+  return `Batch ${idx+1}/${total}`;
+}
+
 function tipPoolForPhase(phase){
   return UPLOAD_IDLE_TIPS[phase] || UPLOAD_IDLE_TIPS.generic;
 }
@@ -1015,19 +1102,26 @@ function applyUploadActivityState({phase,isRealUpdate,failed}){
   ensureUploadIdleWatcher();
 }
 
-function showUploadOverlay(title,detail,percent,{failed=false,phase='working',isRealUpdate=false}={}){
+function showUploadOverlay(title,detail,percent,{failed=false,phase='working',isRealUpdate=false,batchLabel='Batch 1/1',batchPercent=0}={}){
   const overlay=document.getElementById('upload-progress-overlay');
   if(!overlay)return;
   const pct=Math.max(0,Math.min(100,Math.round(percent)));
+  const batchPct=Math.max(0,Math.min(100,Math.round(batchPercent)));
   overlay.style.display='flex';
   overlay.classList.toggle('failed',failed);
   const titleEl=document.getElementById('upload-progress-title');
   const pctEl=document.getElementById('upload-progress-percent');
   const fillEl=document.getElementById('upload-progress-fill');
+  const batchLabelEl=document.getElementById('upload-progress-batch-label');
+  const batchPctEl=document.getElementById('upload-progress-batch-percent');
+  const batchFillEl=document.getElementById('upload-progress-batch-fill');
   const detailEl=document.getElementById('upload-progress-detail');
   if(titleEl)titleEl.textContent=title;
   if(pctEl)pctEl.textContent=`${pct}%`;
   if(fillEl)fillEl.style.width=`${pct}%`;
+  if(batchLabelEl)batchLabelEl.textContent=batchLabel;
+  if(batchPctEl)batchPctEl.textContent=`${batchPct}%`;
+  if(batchFillEl)batchFillEl.style.width=`${batchPct}%`;
   if(detailEl)detailEl.textContent=detail;
   applyUploadActivityState({phase,isRealUpdate,failed});
 }
@@ -1065,128 +1159,156 @@ async function* walkDirectory(handle,prefix=''){
 }
 
 async function performUpload(entries){
-  uploadProgressPercent=1;
-  showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent,{
-    phase:'uploading',
-    isRealUpdate:true,
-  });
-  const result=await api.uploadFiles(entries,{
-    onUploadProgress:(progress)=>{
-      const pct=Math.max(1,Math.min(35,Math.round((progress?.progress||0)*35)));
-      if(pct>uploadProgressPercent){
-        uploadProgressPercent=pct;
-        showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent,{
-          phase:'uploading',
-          isRealUpdate:true,
-        });
-      }
-    },
-  });
-  if(!result.ok){
-    showUploadOverlay('Upload failed','Could not upload folder',100,{failed:true,phase:'failed',isRealUpdate:true});
-    await new Promise((resolve)=>setTimeout(resolve,900));
+  const batches=chunkEntries(entries,UPLOAD_BATCH_SIZE);
+  if(!batches.length){
     hideUploadOverlay();
-    showToast('Upload failed');
+    showToast('No files to upload');
     return;
   }
 
-  if(result.status===409){
-    hideUploadOverlay();
-    showToast(result.data?.detail||'Another upload is already running');
-    return;
-  }
-
-  const operationId=result.data?.operation_id;
-  if(!operationId){
-    hideUploadOverlay();
-    showToast('Upload started without operation id');
-    return;
-  }
-
-  const completion = await new Promise((resolve)=>{
-    let done=false;
-    let syncInFlight=false;
-    let lastSyncAt=0;
-    const trySync=()=>{
-      if(syncInFlight)return;
-      const now=Date.now();
-      if(now-lastSyncAt<1200)return;
-      lastSyncAt=now;
-      syncInFlight=true;
-      void syncModelFromApi()
-        .then(()=>{
-          if(activeLens==='stacks')renderStacks();
-          if(activeLens==='duel')renderDuel();
-          updateBadges();
-        })
-        .finally(()=>{syncInFlight=false;});
-    };
-    const onProgress=(payload)=>{
-      const phase=payload?.phase||'working';
-      const percent=Number(payload?.percent);
-      if(Number.isFinite(percent)){
-        uploadProgressPercent=Math.max(uploadProgressPercent,Math.min(100,Math.max(0,percent)));
-      }
+  const runUploadBatch=async(batchEntries,batchIndex,batchTotal)=>{
+    let batchProgressPercent=1;
+    const label=batchLabelFor(batchIndex,batchTotal);
+    const updateOverlay=(title,detail,phase,failed=false,isRealUpdate=true)=>{
       showUploadOverlay(
-        uploadStageTitle(phase),
-        uploadStageDetail(payload),
-        uploadProgressPercent,
-        {failed:phase==='failed',phase,isRealUpdate:true},
+        title,
+        detail,
+        overallPercentForBatch(batchIndex,batchTotal,batchProgressPercent),
+        {
+          failed,
+          phase,
+          isRealUpdate,
+          batchLabel:label,
+          batchPercent:batchProgressPercent,
+        },
       );
-      if(phase==='indexing' || phase==='provisional_clustering' || phase==='refining'){
-        trySync();
-      }
     };
 
-    const stopStream=api.streamOperationEvents(operationId,{
-      onEvent:onProgress,
-      onDone:(payload)=>{
-        onProgress(payload);
-        if(done)return;
-        done=true;
-        clearInterval(pollTimer);
-        stopStream();
-        resolve(payload||{status:'failed',phase:'failed',message:'Operation stream ended'});
-      },
-      onError:()=>{
-        // Poll fallback handles transient SSE disconnects.
+    updateOverlay('Uploading folder',`Sending ${batchEntries.length} files`, 'uploading');
+    const result=await api.uploadFiles(batchEntries,{
+      onUploadProgress:(progress)=>{
+        const pct=Math.max(1,Math.min(35,Math.round((progress?.progress||0)*35)));
+        if(pct<=batchProgressPercent)return;
+        batchProgressPercent=pct;
+        const done=Number(progress?.files_done||0);
+        const total=Number(progress?.files_total||batchEntries.length);
+        const detail=total>0?`Uploaded ${done}/${total} files in current batch`:'Sending files to server';
+        updateOverlay('Uploading folder',detail,'uploading');
       },
     });
+    if(!result.ok){
+      return {ok:false,error:'Could not upload current batch'};
+    }
+    if(result.status===409){
+      return {ok:false,error:result.data?.detail||'Another upload is already running'};
+    }
 
-    const pollTimer=setInterval(async()=>{
-      if(done)return;
-      const snapshot=await api.getOperation(operationId);
-      if(!snapshot.ok || !snapshot.data?.operation)return;
-      const operation=snapshot.data.operation;
-      onProgress(operation);
-      if(operation.status==='completed' || operation.status==='failed'){
-        done=true;
-        clearInterval(pollTimer);
-        stopStream();
-        resolve(operation);
-      }
-    },1000);
-  });
+    const operationId=result.data?.operation_id;
+    if(!operationId){
+      return {ok:false,error:'Upload started without operation id'};
+    }
 
-  await refreshUiFromBackend();
-  if(completion?.status==='completed'){
-    showUploadOverlay('Upload complete',completion?.message||'Upload complete',100,{
+    const completion = await new Promise((resolve)=>{
+      let done=false;
+      let syncInFlight=false;
+      let lastSyncAt=0;
+      const trySync=()=>{
+        if(syncInFlight)return;
+        const now=Date.now();
+        if(now-lastSyncAt<1200)return;
+        lastSyncAt=now;
+        syncInFlight=true;
+        void syncModelFromApi()
+          .then(()=>{
+            if(activeLens==='stacks')renderStacks();
+            if(activeLens==='duel')renderDuel();
+            updateBadges();
+          })
+          .finally(()=>{syncInFlight=false;});
+      };
+      const onProgress=(payload)=>{
+        const phase=payload?.phase||'working';
+        const percent=Number(payload?.percent);
+        if(Number.isFinite(percent)){
+          const mapped=35+Math.round((Math.max(0,Math.min(100,percent))/100)*65);
+          batchProgressPercent=Math.max(batchProgressPercent,Math.min(100,mapped));
+        }
+        updateOverlay(uploadStageTitle(phase),uploadStageDetail(payload),phase,phase==='failed',true);
+        if(phase==='indexing' || phase==='provisional_clustering' || phase==='refining'){
+          trySync();
+        }
+      };
+
+      const stopStream=api.streamOperationEvents(operationId,{
+        onEvent:onProgress,
+        onDone:(payload)=>{
+          onProgress(payload);
+          if(done)return;
+          done=true;
+          clearInterval(pollTimer);
+          stopStream();
+          resolve(payload||{status:'failed',phase:'failed',message:'Operation stream ended'});
+        },
+        onError:()=>{
+          // Poll fallback handles transient SSE disconnects.
+        },
+      });
+
+      const pollTimer=setInterval(async()=>{
+        if(done)return;
+        const snapshot=await api.getOperation(operationId);
+        if(!snapshot.ok || !snapshot.data?.operation)return;
+        const operation=snapshot.data.operation;
+        onProgress(operation);
+        if(operation.status==='completed' || operation.status==='failed'){
+          done=true;
+          clearInterval(pollTimer);
+          stopStream();
+          resolve(operation);
+        }
+      },1000);
+    });
+    return {ok:completion?.status==='completed',completion,error:completion?.error||completion?.message};
+  };
+
+  for(let batchIndex=0;batchIndex<batches.length;batchIndex++){
+    const batchEntries=batches[batchIndex];
+    const batchResult=await runUploadBatch(batchEntries,batchIndex,batches.length);
+    if(!batchResult.ok){
+      showUploadOverlay(
+        'Upload failed',
+        batchResult.error||'Upload failed',
+        overallPercentForBatch(batchIndex,batches.length,100),
+        {
+          failed:true,
+          phase:'failed',
+          isRealUpdate:true,
+          batchLabel:batchLabelFor(batchIndex,batches.length),
+          batchPercent:100,
+        },
+      );
+      await new Promise((resolve)=>setTimeout(resolve,1200));
+      hideUploadOverlay();
+      showToast('Upload failed');
+      return;
+    }
+    await refreshUiFromBackend();
+  }
+
+  showUploadOverlay(
+    'Upload complete',
+    `Processed ${entries.length} files across ${batches.length} batch${batches.length===1?'':'es'}`,
+    100,
+    {
       phase:'completed',
       isRealUpdate:true,
-    });
-    await new Promise((resolve)=>setTimeout(resolve,700));
-    hideUploadOverlay();
-    showToast(completion?.message||'Upload complete');
-    return;
-  }
-  showUploadOverlay('Upload failed',completion?.error||completion?.message||'Upload failed',100,{
-    failed:true,
-    phase:'failed',
-    isRealUpdate:true,
-  });
-  await new Promise((resolve)=>setTimeout(resolve,1200));
+      batchLabel:batchLabelFor(batches.length-1,batches.length),
+      batchPercent:100,
+    },
+  );
+  await new Promise((resolve)=>setTimeout(resolve,900));
   hideUploadOverlay();
-  showToast('Upload failed');
+  showToast('Upload complete');
 }
 
 async function doUpload(){
@@ -1259,6 +1381,7 @@ async function bootstrap(){
   if(uploadInput){
     uploadInput.addEventListener('change',handleUploadChange);
   }
+  window.addEventListener('keydown',handleInspectKeys);
   await api.getReferences();
   await syncModelFromApi();
   renderStacks();
@@ -1272,6 +1395,7 @@ Object.assign(window,{
   closeModal,
   confirmPick,
   copyLink,
+  cycleInspectDuel,
   delTheme,
   ddr,
   dlv,

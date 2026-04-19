@@ -107,6 +107,18 @@ body{
 .duel-skip:hover{background:var(--color-background-secondary)}
 .duel-stack-name{font-size:14px;font-weight:500;color:var(--color-text-primary);text-align:center}
 .duel-hint{font-size:12px;color:var(--color-text-tertiary);text-align:center}
+.duel-compare-row{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--color-text-tertiary)}
+.duel-compare-switch{
+  width:30px;
+  height:24px;
+  border-radius:999px;
+  border:0.5px solid var(--color-border-secondary);
+  background:var(--color-background-primary);
+  color:var(--color-text-secondary);
+  font-size:13px;
+  cursor:pointer;
+}
+.duel-compare-switch:hover{background:var(--color-background-secondary);color:var(--color-text-primary)}
 .duel-done{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 20px}
 .done-icon{width:44px;height:44px;border-radius:50%;background:#E1F5EE;display:flex;align-items:center;justify-content:center;font-size:20px}
 .done-title{font-size:15px;font-weight:500;color:var(--color-text-primary)}
@@ -275,6 +287,20 @@ body{
   width:0;
   background:linear-gradient(90deg,#7F77DD 0%,#4C42C8 100%);
   transition:width .25s ease;
+}
+.upload-progress-batch-head{
+  margin-top:2px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  font-size:12px;
+  color:var(--color-text-tertiary);
+}
+.upload-progress-bar-batch{
+  height:10px;
+}
+.upload-progress-fill-batch{
+  background:linear-gradient(90deg,#378ADD 0%,#2368B4 100%);
 }
 .upload-progress-detail{
   font-size:13px;

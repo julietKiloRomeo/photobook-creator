@@ -141,6 +141,8 @@ export const api = {
   uploadFiles(entries, options = {}) {
     const { onUploadProgress } = options;
     const form = new FormData();
+    const files = [];
+    let totalBytes = 0;
     (entries || []).forEach((entry) => {
       const file = entry?.file || entry;
       if (!file) {
@@ -155,20 +157,61 @@ export const api = {
 
       form.append('files', file);
       form.append('relative_paths', relativePath);
+      files.push(file);
+      totalBytes += Number(file.size || 0);
     });
+
+    const cumulativeBytes = [];
+    {
+      let running = 0;
+      files.forEach((file) => {
+        running += Number(file.size || 0);
+        cumulativeBytes.push(running);
+      });
+    }
+
+    const estimateUploadedFiles = (loadedBytes) => {
+      if (!cumulativeBytes.length) {
+        return 0;
+      }
+      let low = 0;
+      let high = cumulativeBytes.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (cumulativeBytes[mid] <= loadedBytes) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      return low;
+    };
 
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', apiPath('/uploads'));
 
       xhr.upload.onprogress = (event) => {
-        if (!event.lengthComputable || typeof onUploadProgress !== 'function') {
+        if (typeof onUploadProgress !== 'function') {
           return;
         }
+
+        const loaded = Number(event.loaded || 0);
+        const measuredTotal = Number(event.total || 0);
+        const total = event.lengthComputable && measuredTotal > 0
+          ? measuredTotal
+          : totalBytes;
+
+        const progress = total > 0
+          ? Math.max(0, Math.min(1, loaded / total))
+          : 0;
+
         onUploadProgress({
-          loaded: event.loaded,
-          total: event.total,
-          progress: event.total > 0 ? event.loaded / event.total : 0,
+          loaded,
+          total,
+          progress,
+          files_done: estimateUploadedFiles(loaded),
+          files_total: files.length,
         });
       };
 
