@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from photobook.api import create_app
 
@@ -8,6 +11,12 @@ from photobook.api import create_app
 def _client(tmp_path, monkeypatch) -> TestClient:
     db_path = tmp_path / "project.db"
     monkeypatch.setenv("PHOTOBOOK_DB_PATH", str(db_path))
+    return TestClient(create_app())
+
+
+def _project_client(tmp_path, monkeypatch) -> TestClient:
+    monkeypatch.delenv("PHOTOBOOK_DB_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
     return TestClient(create_app())
 
 
@@ -141,3 +150,42 @@ def test_chapter_page_item_and_export_flow(tmp_path, monkeypatch) -> None:
     assert data["chapters"][0]["name"] == "Summer"
     assert len(data["chapters"][0]["pages"]) == 2
     assert len(data["chapters"][0]["pages"][0]["items"]) == 2
+
+
+def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+
+    project = client.post("/api/projects", json={"name": "Upload Test"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    image = Image.new("RGB", (32, 24), color=(30, 90, 160))
+    buf = BytesIO()
+    image.save(buf, format="JPEG")
+    payload = buf.getvalue()
+
+    upload = client.post(
+        f"/api/projects/{project_id}/uploads",
+        files=[
+            ("files", ("day1.jpg", payload, "image/jpeg")),
+            ("relative_paths", (None, "Vacation 2026/Day 1/day1.jpg")),
+        ],
+    )
+    assert upload.status_code == 200
+    upload_info = upload.json()["upload"]
+    assert upload_info["stored"] == 1
+    assert upload_info["supported_images"] == 1
+
+    uploads = client.get(f"/api/projects/{project_id}/uploads")
+    assert uploads.status_code == 200
+    metadata = uploads.json()["items"][0]["metadata"]
+    assert metadata["relative_path"] == "Vacation_2026/Day_1/day1.jpg"
+
+    stacks = client.get(f"/api/projects/{project_id}/stacks")
+    assert stacks.status_code == 200
+    first_photo_id = stacks.json()["items"][0]["photos"][0]["id"]
+
+    image_response = client.get(f"/api/projects/{project_id}/references/{first_photo_id}/image")
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"].startswith("image/")
+    assert len(image_response.content) > 0

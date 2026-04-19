@@ -57,13 +57,6 @@ const PROJECT_ID = (() => {
   const match = window.location.pathname.match(/^\/darkroom\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 })();
-const lensApiTouched={
-  stacks:false,
-  themes:false,
-  timeline:false,
-  chapters:false,
-};
-
 if(!PROJECT_ID){
   window.location.assign('/');
 }
@@ -75,11 +68,20 @@ function getPick(sid){const s=getS(sid);if(!s)return null;const pid=s.pick||s.ph
 function resolved(s){return s.pick!==null}
 function resolvedCount(){return STACKS.filter(resolved).length}
 function themeOf(sid){return themes.find(t=>t.stacks.includes(sid))}
-function colorBlock(color,w,h,label,r){return`<div style="width:${w}px;height:${h}px;border-radius:${r||4}px;background:${color};display:flex;align-items:flex-end;padding:4px;overflow:hidden"><span style="font-size:8px;color:rgba(0,0,0,.38);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%">${label||''}</span></div>`}
-function touchLensApi(key,fn){
-  if(lensApiTouched[key])return;
-  lensApiTouched[key]=true;
-  void fn();
+
+function escAttr(value){
+  return String(value??'')
+    .replaceAll('&','&amp;')
+    .replaceAll('"','&quot;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;');
+}
+
+function photoStyle(photo,fallback='var(--color-background-secondary)'){
+  const base=`background:${photo?.color||fallback};`;
+  if(!photo?.url)return base;
+  const safeUrl=encodeURI(String(photo.url));
+  return `${base}background-image:url(${safeUrl});background-size:cover;background-position:center;background-repeat:no-repeat;`;
 }
 
 function normalizePhoto(photo){
@@ -89,6 +91,7 @@ function normalizePhoto(photo){
     label:photo.label||`Photo ${pid}`,
     color:photo.color||THEME_COLORS[Number(pid)%THEME_COLORS.length],
     date:photo.date||new Date().toISOString().slice(0,10),
+    url:photo.image_url||api.referenceImageUrl(pid),
   };
 }
 
@@ -236,15 +239,15 @@ function renderStacks(){
     const count=s.photos.length;
     if(res&&s.pick){
       const p=getP(s.pick);
-      fanHTML=`<div style="position:absolute;inset:10px;border-radius:6px;background:${p?p.color:'var(--color-background-secondary)'};display:flex;align-items:flex-end;padding:6px"><span style="font-size:9px;color:rgba(0,0,0,.4)">${p?p.label:''}</span></div>`;
+      fanHTML=`<div style="position:absolute;inset:10px;border-radius:6px;${photoStyle(p)}display:flex;align-items:flex-end;padding:6px"><span style="font-size:9px;color:rgba(0,0,0,.4)">${escAttr(p?p.label:'')}</span></div>`;
     }else if(count===1){
       const p=getP(s.photos[0]);
-      fanHTML=`<div style="position:absolute;inset:10px;border-radius:6px;background:${p?p.color:'var(--color-background-secondary)'}"></div>`;
+      fanHTML=`<div style="position:absolute;inset:10px;border-radius:6px;${photoStyle(p)}"></div>`;
     }else{
       const offs=[[10,14,96,84],[18,22,96,84],[26,30,96,84]];
       s.photos.slice(0,3).forEach((pid,i)=>{
         const p=getP(pid);const[t,l,w,h]=offs[Math.min(i,2)];
-        fanHTML+=`<div class="fan-img" style="top:${t}px;left:${l}px;width:${w}px;height:${h}px;z-index:${i+1};background:${p?p.color:'#ccc'}"></div>`;
+        fanHTML+=`<div class="fan-img" style="top:${t}px;left:${l}px;width:${w}px;height:${h}px;z-index:${i+1};${photoStyle(p,'#ccc')}"></div>`;
       });
     }
     card.innerHTML=`<div class="stack-photo-area">${fanHTML}
@@ -271,8 +274,8 @@ function openStack(sid){
     const d=document.createElement('div');
     d.className='photo-opt'+(s.pick===pid?' sel':'');
     d.dataset.pid=pid;d.onclick=()=>selPick(pid);
-    d.innerHTML=`<div class="photo-opt-img" style="background:${p.color};display:flex;align-items:flex-end;padding:5px"><span style="font-size:9px;color:rgba(0,0,0,.38)">${p.label}</span></div>
-      <div class="photo-opt-lbl">${p.label}</div>
+    d.innerHTML=`<div class="photo-opt-img" style="${photoStyle(p)}display:flex;align-items:flex-end;padding:5px"><span style="font-size:9px;color:rgba(0,0,0,.38)">${escAttr(p.label)}</span></div>
+      <div class="photo-opt-lbl">${escAttr(p.label)}</div>
       <div class="checkmark"><div class="ck"></div></div>`;
     g.appendChild(d);
   });
@@ -333,8 +336,8 @@ function renderDuel(){
     const cls=`duel-card${picked?' winner':otherPicked?' loser':''}`;
     const avHTML=avatars.filter(a=>a.vote===pid).map(a=>`<div class="duel-voter" style="background:${a.bg};color:${a.fg}">${a.init}</div>`).join('');
     return`<div class="${cls}" onclick="pickDuel('${s.id}','${pid}')">
-      <div class="duel-img" style="background:${p?p.color:'#ccc'}">
-        <div class="duel-img-label">${p?p.label:''}</div>
+      <div class="duel-img" style="${photoStyle(p,'#ccc')}">
+        <div class="duel-img-label">${escAttr(p?p.label:'')}</div>
       </div>
       <div class="duel-footer">
         <div class="duel-voter-row">${avHTML}</div>
@@ -465,7 +468,7 @@ function renderTimeline(){
       card.className='tl-card '+(res?'resolved':'unresolved');
       card.onclick=()=>openStack(s.id);
       const d=new Date(s.date);const dayStr=d.toLocaleDateString('default',{weekday:'short',day:'numeric'});
-      card.innerHTML=`<div class="tl-thumb" style="background:${pick?pick.color:'var(--color-background-secondary)'}"></div>
+      card.innerHTML=`<div class="tl-thumb" style="${photoStyle(pick)}"></div>
         <div class="tl-info">
           <div class="tl-name">${s.label}</div>
           <div class="tl-sub">
@@ -522,7 +525,7 @@ function renderPagesRow(tid){
     for(let i=0;i<n;i++){
       const s=sl[i];const p=s&&s.type==='photo'?getP(s.pid):null;
       const span=lay==='1+2'&&i===0?'grid-row:1/3':'';
-      prevHTML+=`<div style="background:${p?p.color:'var(--color-background-secondary)'};border-radius:2px;${span}"></div>`;
+      prevHTML+=`<div style="${photoStyle(p)}border-radius:2px;${span}"></div>`;
     }
     card.innerHTML=`<div class="pg-preview" style="grid-template-columns:${gcols};grid-template-rows:${grows}">${prevHTML}</div>
       <div class="pg-foot">p.${pg.num}</div>`;
@@ -582,7 +585,7 @@ function renderPageCanvas(pid,tid){
     if(lay==='1+2'&&i===0)el.style.gridRow='1/3';
     const s=sl[i];const p=s&&s.type==='photo'?getP(s.pid):null;
     if(p){
-      el.innerHTML=`<div style="width:100%;height:100%;background:${p.color};display:flex;align-items:flex-end;padding:7px"><span style="font-size:9px;color:rgba(0,0,0,.35)">${p.label}</span></div><button class="slot-rm" onclick="rmSlot('${pid}',${i},event)">✕</button>`;
+      el.innerHTML=`<div style="width:100%;height:100%;${photoStyle(p)}display:flex;align-items:flex-end;padding:7px"><span style="font-size:9px;color:rgba(0,0,0,.35)">${escAttr(p.label)}</span></div><button class="slot-rm" onclick="rmSlot('${pid}',${i},event)">✕</button>`;
     }else if(s&&s.type==='text'){
       el.innerHTML=`<div style="width:100%;background:#E6F1FB;padding:8px 10px;font-size:11px;color:#185FA5">${s.text}</div><button class="slot-rm" onclick="rmSlot('${pid}',${i},event)">✕</button>`;
     }else{
@@ -610,8 +613,8 @@ function renderPPList(tid){
   t.stacks.forEach(sid=>{
     const pick=getPick(sid);const s=getS(sid);if(!pick)return;
     const el=document.createElement('div');el.className='pp-item';el.draggable=true;
-    el.innerHTML=`<div class="pp-img" style="background:${pick.color};display:flex;align-items:flex-end;padding:3px"><span style="font-size:8px;color:rgba(0,0,0,.35)">${pick.label}</span></div>
-      <div class="pp-name">${s?s.label:''}</div>`;
+    el.innerHTML=`<div class="pp-img" style="${photoStyle(pick)}display:flex;align-items:flex-end;padding:3px"><span style="font-size:8px;color:rgba(0,0,0,.35)">${escAttr(pick.label)}</span></div>
+      <div class="pp-name">${escAttr(s?s.label:'')}</div>`;
     el.ondragstart=e=>e.dataTransfer.setData('pid',pick.id);
     list.appendChild(el);
   });
@@ -665,18 +668,9 @@ function summarizeUpload(result){
   return `Uploaded ${stored} file${stored===1?'':'s'} (${images} image${images===1?'':'s'}, ${ignored} ignored)`;
 }
 
-function doUpload(){
-  const input=document.getElementById('upload-input');
-  if(input)input.click();
-}
-
-async function handleUploadChange(event){
-  const files=Array.from(event.target.files||[]);
-  if(!files.length)return;
-  const result=await api.uploadFiles(files);
+async function applyUploadResult(result){
   if(!result.ok){
     showToast('Upload failed');
-    event.target.value='';
     return;
   }
 
@@ -687,6 +681,58 @@ async function handleUploadChange(event){
   if(activeLens==='book')renderBook();
   updateBadges();
   showToast(summarizeUpload(result.data?.upload||{}));
+}
+
+async function* walkDirectory(handle,prefix=''){
+  for await (const entry of handle.values()){
+    const rel=prefix?`${prefix}/${entry.name}`:entry.name;
+    if(entry.kind==='file'){
+      const file=await entry.getFile();
+      yield {file,relativePath:rel};
+      continue;
+    }
+    if(entry.kind==='directory'){
+      yield* walkDirectory(entry,rel);
+    }
+  }
+}
+
+async function doUpload(){
+  if(typeof window.showDirectoryPicker==='function'){
+    try{
+      const dir=await window.showDirectoryPicker();
+      const entries=[];
+      for await (const item of walkDirectory(dir,dir.name)){
+        entries.push(item);
+      }
+      if(!entries.length){
+        showToast('No files found in selected folder');
+        return;
+      }
+      const result=await api.uploadFiles(entries);
+      await applyUploadResult(result);
+      return;
+    }catch(error){
+      if(error && error.name==='AbortError')return;
+      console.error('Directory upload failed, falling back to file input.',error);
+    }
+  }
+
+  const input=document.getElementById('upload-input');
+  if(input){
+    input.click();
+  }
+}
+
+async function handleUploadChange(event){
+  const files=Array.from(event.target.files||[]);
+  if(!files.length)return;
+  const entries=files.map((file)=>({
+    file,
+    relativePath:file.webkitRelativePath||file.name,
+  }));
+  const result=await api.uploadFiles(entries);
+  await applyUploadResult(result);
   event.target.value='';
 }
 

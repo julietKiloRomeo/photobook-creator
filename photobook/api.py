@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import mimetypes
 import os
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,6 +21,7 @@ from photobook.project_store import (
     create_theme,
     delete_theme,
     ensure_schema,
+    get_reference,
     item_exists,
     list_chapters,
     list_duplicate_groups,
@@ -227,6 +229,23 @@ def _post_duel_pick(db_path: Path, payload: DuelPickRequest) -> JSONResponse:
     return JSONResponse({"item": updated or {"id": stack_id}})
 
 
+def _reference_image_response(db_path: Path, reference_id: int) -> FileResponse:
+    reference = get_reference(db_path, reference_id)
+    if reference is None:
+        raise HTTPException(status_code=404, detail="Reference not found")
+
+    source = str(reference.get("source") or "").strip()
+    if not source:
+        raise HTTPException(status_code=404, detail="Reference source missing")
+
+    path = Path(source)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Reference file not found")
+
+    media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Photo Book Creator API")
 
@@ -289,7 +308,11 @@ def create_app() -> FastAPI:
         return JSONResponse({"items": list_uploads(ctx["db_path"])})
 
     @app.post("/api/projects/{project_id}/uploads")
-    async def post_project_uploads(project_id: str, files: list[UploadFile] = File(...)) -> JSONResponse:
+    async def post_project_uploads(
+        project_id: str,
+        files: list[UploadFile] = File(...),
+        relative_paths: list[str] = Form(default=[]),
+    ) -> JSONResponse:
         if not files:
             return JSONResponse({"upload": {"stored": 0, "supported_images": 0, "ignored": 0, "created_references": 0}})
 
@@ -299,6 +322,7 @@ def create_app() -> FastAPI:
             originals_dir=ctx["originals_dir"],
             derived_dir=ctx["derived_dir"],
             files=files,
+            relative_paths=relative_paths,
         )
         processing = run_clustering_pipeline(ctx["db_path"])
         return JSONResponse(
@@ -312,6 +336,11 @@ def create_app() -> FastAPI:
                 "processing": processing,
             }
         )
+
+    @app.get("/api/projects/{project_id}/references/{reference_id}/image")
+    def get_project_reference_image(project_id: str, reference_id: int) -> FileResponse:
+        ctx = _ctx(project_id)
+        return _reference_image_response(ctx["db_path"], reference_id)
 
     @app.post("/api/projects/{project_id}/process")
     def post_project_process(project_id: str) -> JSONResponse:
@@ -513,6 +542,11 @@ def create_app() -> FastAPI:
         ctx = _ctx(None)
         items = upsert_references(ctx["db_path"], [item.model_dump() for item in payload.items])
         return JSONResponse({"items": items})
+
+    @app.get("/api/references/{reference_id}/image")
+    def get_reference_image(reference_id: int) -> FileResponse:
+        ctx = _ctx(None)
+        return _reference_image_response(ctx["db_path"], reference_id)
 
     @app.get("/api/stacks")
     def get_stacks() -> JSONResponse:

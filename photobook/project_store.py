@@ -198,6 +198,26 @@ def list_references(db_path: Path) -> list[dict[str, Any]]:
     return items
 
 
+def get_reference(db_path: Path, reference_id: int) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, source, source_type, label, metadata_json, created_at
+            FROM intake_references
+            WHERE id = ?
+            """,
+            (reference_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    item = dict(row)
+    item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+    return item
+
+
 def create_upload(
     db_path: Path,
     *,

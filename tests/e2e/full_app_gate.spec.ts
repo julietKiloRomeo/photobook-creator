@@ -28,18 +28,7 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
 
   await test.step('Upload fixture photos for real clustering', async () => {
     const fixtureDir = path.join(process.cwd(), 'tests', 'fixtures', 'vacation-20');
-    const files = [
-      'vacation_01.jpg',
-      'vacation_02.jpg',
-      'vacation_03.jpg',
-      'vacation_04.jpg',
-      'vacation_05.jpg',
-      'vacation_06.jpg',
-      'vacation_07.jpg',
-      'vacation_08.jpg',
-    ].map((name) => path.join(fixtureDir, name));
-
-    await page.setInputFiles('#upload-input', files);
+    await page.setInputFiles('#upload-input', fixtureDir);
     await expect.poll(async () => page.locator('#stacks-grid .stack-card').count()).toBeGreaterThan(0);
   });
 

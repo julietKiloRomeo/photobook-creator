@@ -48,6 +48,10 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  referenceImageUrl(referenceId) {
+    return apiPath(`/references/${encodeURIComponent(referenceId)}/image`);
+  },
+
   getReferences() {
     return request('/intake/references');
   },
@@ -127,9 +131,23 @@ export const api = {
     });
   },
 
-  async uploadFiles(files) {
+  async uploadFiles(entries) {
     const form = new FormData();
-    files.forEach((file) => form.append('files', file));
+    (entries || []).forEach((entry) => {
+      const file = entry?.file || entry;
+      if (!file) {
+        return;
+      }
+
+      const relativePath =
+        entry?.relativePath ||
+        file.webkitRelativePath ||
+        file.name ||
+        'file';
+
+      form.append('files', file);
+      form.append('relative_paths', relativePath);
+    });
 
     const response = await fetch(apiPath('/uploads'), {
       method: 'POST',

@@ -40,6 +40,25 @@ def _safe_name(name: str) -> str:
     return cleaned or "file"
 
 
+def _normalize_relative_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    raw = path.replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return None
+
+    parts: list[str] = []
+    for part in raw.split("/"):
+        part = part.strip()
+        if not part or part in {".", ".."}:
+            continue
+        parts.append(_safe_name(part))
+
+    if not parts:
+        return None
+    return "/".join(parts)
+
+
 def _sha256_bytes(data: bytes) -> str:
     digest = hashlib.sha256()
     digest.update(data)
@@ -85,6 +104,7 @@ def process_uploads(
     originals_dir: Path,
     derived_dir: Path,
     files: list[UploadFile],
+    relative_paths: list[str] | None = None,
 ) -> UploadResult:
     originals_dir.mkdir(parents=True, exist_ok=True)
     derived_dir.mkdir(parents=True, exist_ok=True)
@@ -94,13 +114,21 @@ def process_uploads(
     ignored = 0
     stored = 0
 
-    for incoming in files:
+    normalized_relative_paths = relative_paths or []
+
+    for index, incoming in enumerate(files):
         original_name = incoming.filename or "file"
-        safe_name = _safe_name(original_name)
+        raw_relative_path = normalized_relative_paths[index] if index < len(normalized_relative_paths) else None
+        relative_path = _normalize_relative_path(raw_relative_path)
+
+        relative_filename = Path(relative_path).name if relative_path else original_name
+        safe_name = _safe_name(relative_filename)
         ext = Path(safe_name).suffix.lower()
         prefix = uuid.uuid4().hex[:10]
         stored_name = f"{prefix}_{safe_name}"
-        original_path = originals_dir / stored_name
+        relative_parent = Path(relative_path).parent if relative_path else Path()
+        original_path = originals_dir / relative_parent / stored_name
+        original_path.parent.mkdir(parents=True, exist_ok=True)
 
         data = incoming.file.read()
         stored += 1
@@ -126,7 +154,8 @@ def process_uploads(
                     ignored_reason = "unsupported_image_data"
                 else:
                     derived_name = f"{Path(stored_name).stem}.jpg"
-                    derived_path = derived_dir / derived_name
+                    derived_path = derived_dir / relative_parent / derived_name
+                    derived_path.parent.mkdir(parents=True, exist_ok=True)
                     derived_path.write_bytes(jpeg_data)
 
         upload_id = create_upload(
@@ -143,6 +172,13 @@ def process_uploads(
                 "uploaded_at": datetime.now(timezone.utc).isoformat(),
                 "extension": ext,
                 "heif_enabled": HEIF_ENABLED,
+                "relative_path": relative_path,
+                "stored_original_relative_path": str(original_path.relative_to(originals_dir)).replace("\\", "/"),
+                "stored_derived_relative_path": (
+                    str(derived_path.relative_to(derived_dir)).replace("\\", "/")
+                    if derived_path is not None
+                    else None
+                ),
             },
         )
 
