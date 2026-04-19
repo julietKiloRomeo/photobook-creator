@@ -209,6 +209,52 @@ export const api = {
     return request('/uploads/progress');
   },
 
+  getOperation(operationId) {
+    return request(`/operations/${encodeURIComponent(operationId)}`);
+  },
+
+  streamOperationEvents(operationId, handlers = {}) {
+    const url = apiPath(`/operations/${encodeURIComponent(operationId)}/events`);
+    if (typeof EventSource !== 'function') {
+      if (typeof handlers.onError === 'function') {
+        handlers.onError(new Error('EventSource is not supported in this browser'));
+      }
+      return () => {};
+    }
+    const source = new EventSource(url);
+    const { onEvent, onDone, onError } = handlers;
+
+    source.addEventListener('status', (event) => {
+      try {
+        const data = JSON.parse(event.data || '{}');
+        if (typeof onEvent === 'function') {
+          onEvent(data);
+        }
+      } catch (_error) {
+        // Ignore malformed event payloads.
+      }
+    });
+
+    source.addEventListener('done', (event) => {
+      try {
+        const data = JSON.parse(event.data || '{}');
+        if (typeof onDone === 'function') {
+          onDone(data);
+        }
+      } finally {
+        source.close();
+      }
+    });
+
+    source.onerror = (error) => {
+      if (typeof onError === 'function') {
+        onError(error);
+      }
+    };
+
+    return () => source.close();
+  },
+
   getDuplicates() {
     return request('/duplicates');
   },

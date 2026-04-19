@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+import json
 import mimetypes
 import os
 from pathlib import Path
+import shutil
 import threading
 from typing import Any, Literal
 import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -22,9 +25,13 @@ from photobook.project_store import (
     create_chapter,
     create_page_item,
     create_theme,
+    create_upload_operation,
     delete_theme,
     ensure_schema,
+    get_cluster_state,
     get_reference,
+    get_latest_upload_operation,
+    get_upload_operation,
     item_exists,
     list_chapters,
     list_duplicate_groups,
@@ -33,16 +40,20 @@ from photobook.project_store import (
     list_pages_with_items,
     list_references,
     list_stacks,
+    list_upload_operation_events,
     list_themes,
     list_timeline_items,
     list_uploads,
+    mark_stale_upload_operations,
     page_exists,
     pick_stack_reference,
     reference_exists,
     reorder_chapters,
+    set_cluster_state,
     split_stack_cluster,
     sync_pages_for_chapter,
     theme_exists,
+    update_upload_operation,
     update_chapter_name,
     update_page_item,
     update_theme,
@@ -58,7 +69,7 @@ from photobook.projects_index import (
     list_projects,
     reset_project_storage,
 )
-from photobook.uploads import process_uploads
+from photobook.uploads import StagedUpload, process_staged_uploads
 
 
 DEFAULT_DB_PATH = ".photobook-temp/project.db"
@@ -257,37 +268,197 @@ def _reference_image_response(db_path: Path, reference_id: int) -> FileResponse:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Photo Book Creator API")
-    upload_progress_lock = threading.Lock()
-    upload_progress_by_project: dict[str, dict[str, Any]] = {}
+    worker_lock = threading.Lock()
+    active_workers: set[str] = set()
 
-    def _default_upload_progress() -> dict[str, Any]:
+    def _stack_payload(db_path: Path) -> dict[str, Any]:
         return {
-            "active": False,
-            "operation_id": None,
-            "phase": "idle",
-            "percent": 0,
-            "message": "Idle",
-            "files_total": 0,
-            "files_done": 0,
-            "last_path": None,
-            "error": None,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "items": list_stacks(db_path),
+            "cluster_state": get_cluster_state(db_path),
         }
 
-    def _set_upload_progress(project_id: str, **updates: Any) -> None:
-        with upload_progress_lock:
-            current = upload_progress_by_project.get(project_id, _default_upload_progress())
-            current.update(updates)
-            current["updated_at"] = datetime.now(timezone.utc).isoformat()
-            upload_progress_by_project[project_id] = current
+    def _require_final_cluster(db_path: Path) -> None:
+        cluster_state = get_cluster_state(db_path)
+        if cluster_state.get("state") != "final":
+            raise HTTPException(
+                status_code=409,
+                detail="Stack refinement is still running; themes and book editing unlocks when complete",
+            )
 
-    def _get_upload_progress(project_id: str) -> dict[str, Any]:
-        with upload_progress_lock:
-            current = upload_progress_by_project.get(project_id)
-            if current is None:
-                current = _default_upload_progress()
-                upload_progress_by_project[project_id] = current
-            return dict(current)
+    def _start_operation_worker(
+        db_path: Path,
+        originals_dir: Path,
+        derived_dir: Path,
+        operation_id: str,
+        staged_uploads: list[StagedUpload],
+        staging_root: Path,
+    ) -> None:
+        with worker_lock:
+            active_workers.add(operation_id)
+
+        def _run() -> None:
+            try:
+                set_cluster_state(db_path, "provisional", operation_id)
+                update_upload_operation(
+                    db_path,
+                    operation_id,
+                    status="running",
+                    phase="indexing",
+                    percent=12,
+                    message="Indexing staged files",
+                    files_done=0,
+                    files_total=len(staged_uploads),
+                )
+
+                chunk_size = 24
+                processed_count = 0
+                chunk: list[StagedUpload] = []
+                result_totals = {
+                    "stored": 0,
+                    "supported_images": 0,
+                    "ignored": 0,
+                    "created_references": 0,
+                }
+
+                def _index_progress(done: int, total: int, name: str) -> None:
+                    nonlocal processed_count
+                    processed_count += 1
+                    file_pct = 12 + int((processed_count / max(len(staged_uploads), 1)) * 33)
+                    update_upload_operation(
+                        db_path,
+                        operation_id,
+                        status="running",
+                        phase="indexing",
+                        percent=min(file_pct, 48),
+                        message=f"Indexed {processed_count}/{len(staged_uploads)} files",
+                        files_done=processed_count,
+                        files_total=len(staged_uploads),
+                    )
+
+                for upload in staged_uploads:
+                    chunk.append(upload)
+                    if len(chunk) < chunk_size:
+                        continue
+
+                    chunk_result = process_staged_uploads(
+                        db_path,
+                        originals_dir,
+                        derived_dir,
+                        chunk,
+                        progress_callback=_index_progress,
+                    )
+                    result_totals["stored"] += chunk_result.stored
+                    result_totals["supported_images"] += chunk_result.supported_images
+                    result_totals["ignored"] += chunk_result.ignored
+                    result_totals["created_references"] += chunk_result.created_references
+
+                    update_upload_operation(
+                        db_path,
+                        operation_id,
+                        status="running",
+                        phase="provisional_clustering",
+                        percent=54,
+                        message="Publishing provisional stacks",
+                    )
+                    run_clustering_pipeline(db_path, mode="provisional")
+                    visible = len(list_stacks(db_path))
+                    update_upload_operation(
+                        db_path,
+                        operation_id,
+                        status="running",
+                        phase="provisional_clustering",
+                        percent=58,
+                        message=f"Provisional stacks visible ({visible})",
+                        stacks_visible=visible,
+                    )
+                    chunk = []
+
+                if chunk:
+                    chunk_result = process_staged_uploads(
+                        db_path,
+                        originals_dir,
+                        derived_dir,
+                        chunk,
+                        progress_callback=_index_progress,
+                    )
+                    result_totals["stored"] += chunk_result.stored
+                    result_totals["supported_images"] += chunk_result.supported_images
+                    result_totals["ignored"] += chunk_result.ignored
+                    result_totals["created_references"] += chunk_result.created_references
+
+                update_upload_operation(
+                    db_path,
+                    operation_id,
+                    status="running",
+                    phase="provisional_clustering",
+                    percent=58,
+                    message="Publishing provisional stacks",
+                )
+                run_clustering_pipeline(db_path, mode="provisional")
+                visible_stacks = len(list_stacks(db_path))
+                update_upload_operation(
+                    db_path,
+                    operation_id,
+                    status="running",
+                    phase="provisional_clustering",
+                    percent=62,
+                    message=f"Provisional stacks visible ({visible_stacks})",
+                    stacks_visible=visible_stacks,
+                )
+
+                update_upload_operation(
+                    db_path,
+                    operation_id,
+                    status="running",
+                    phase="refining",
+                    percent=68,
+                    message="Refining stacks and themes",
+                )
+
+                def _final_progress(_step: str, percent: int, message: str) -> None:
+                    scaled = 68 + int((max(0, min(100, percent)) / 100) * 27)
+                    update_upload_operation(
+                        db_path,
+                        operation_id,
+                        status="running",
+                        phase="refining",
+                        percent=min(scaled, 95),
+                        message=message,
+                    )
+
+                run_clustering_pipeline(db_path, mode="final", progress_callback=_final_progress)
+                set_cluster_state(db_path, "final", operation_id)
+                update_upload_operation(
+                    db_path,
+                    operation_id,
+                    status="completed",
+                    phase="completed",
+                    percent=100,
+                    message=(
+                        f"Upload complete ({result_totals['supported_images']} images, "
+                        f"{result_totals['ignored']} ignored)"
+                    ),
+                    stacks_visible=len(list_stacks(db_path)),
+                    append_event=True,
+                )
+            except Exception as exc:  # pragma: no cover - defensive worker guard
+                set_cluster_state(db_path, "final", operation_id)
+                update_upload_operation(
+                    db_path,
+                    operation_id,
+                    status="failed",
+                    phase="failed",
+                    percent=100,
+                    message="Upload failed",
+                    error=str(exc),
+                    append_event=True,
+                )
+            finally:
+                shutil.rmtree(staging_root, ignore_errors=True)
+                with worker_lock:
+                    active_workers.discard(operation_id)
+
+        threading.Thread(target=_run, name=f"upload-op-{operation_id[:8]}", daemon=True).start()
 
     frontend_dir = _root_dir() / "frontend"
     if frontend_dir.exists():
@@ -354,96 +525,194 @@ def create_app() -> FastAPI:
         relative_paths: list[str] = Form(default=[]),
     ) -> JSONResponse:
         if not files:
-            return JSONResponse({"upload": {"stored": 0, "supported_images": 0, "ignored": 0, "created_references": 0}})
+            return JSONResponse({"status": "accepted", "operation_id": None, "files_total": 0}, status_code=202)
 
         ctx = _ctx(project_id)
+        if mark_stale_upload_operations(ctx["db_path"]) > 0:
+            set_cluster_state(ctx["db_path"], "final", None)
+        running = get_latest_upload_operation(ctx["db_path"], active_only=True)
+        if running is not None:
+            return JSONResponse(
+                {
+                    "status": "busy",
+                    "detail": "An upload operation is already running for this project",
+                    "operation": running,
+                },
+                status_code=409,
+            )
+
         operation_id = uuid.uuid4().hex
-        _set_upload_progress(
-            project_id,
-            active=True,
-            operation_id=operation_id,
-            phase="ingesting",
-            percent=5,
-            message="Reading files",
-            files_total=len(files),
-            files_done=0,
-            last_path=None,
-            error=None,
-        )
+        create_upload_operation(ctx["db_path"], operation_id, files_total=len(files))
+        set_cluster_state(ctx["db_path"], "provisional", operation_id)
 
-        def _on_file_progress(done: int, total: int, relative_path: str) -> None:
-            file_pct = 5 + int((done / max(total, 1)) * 55)
-            _set_upload_progress(
-                project_id,
-                active=True,
-                operation_id=operation_id,
-                phase="ingesting",
-                percent=min(file_pct, 60),
-                message=f"Indexed {done}/{total} files",
-                files_total=total,
-                files_done=done,
-                last_path=relative_path,
-                error=None,
+        staging_root = ctx["derived_dir"] / ".upload-staging" / operation_id
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staged_uploads: list[StagedUpload] = []
+        for index, incoming in enumerate(files):
+            relative_path = relative_paths[index] if index < len(relative_paths) else (incoming.filename or f"file-{index}")
+            content = await incoming.read()
+            staged_path = staging_root / f"{index:06d}.upload"
+            staged_path.write_bytes(content)
+            staged_uploads.append(
+                StagedUpload(
+                    filename=incoming.filename or f"file-{index}",
+                    content_type=incoming.content_type,
+                    staged_path=staged_path,
+                    relative_path=relative_path,
+                )
             )
-
-        try:
-            result = await run_in_threadpool(
-                process_uploads,
+            pct = int(((index + 1) / max(len(files), 1)) * 10)
+            update_upload_operation(
                 ctx["db_path"],
-                ctx["originals_dir"],
-                ctx["derived_dir"],
-                files,
-                relative_paths,
-                _on_file_progress,
+                operation_id,
+                status="running",
+                phase="uploading",
+                percent=min(10, max(0, pct)),
+                message=f"Received {index + 1}/{len(files)} files",
+                files_done=index + 1,
+                files_total=len(files),
             )
-            _set_upload_progress(
-                project_id,
-                active=True,
-                operation_id=operation_id,
-                phase="clustering",
-                percent=72,
-                message="Running duplicate, stack, and theme clustering",
-                error=None,
-            )
-            processing = await run_in_threadpool(run_clustering_pipeline, ctx["db_path"])
-            _set_upload_progress(
-                project_id,
-                active=False,
-                operation_id=operation_id,
-                phase="completed",
-                percent=100,
-                message="Upload complete",
-                error=None,
-            )
-        except Exception as exc:
-            _set_upload_progress(
-                project_id,
-                active=False,
-                operation_id=operation_id,
-                phase="failed",
-                message="Upload failed",
-                error=str(exc),
-            )
-            raise
 
+        _start_operation_worker(
+            ctx["db_path"],
+            ctx["originals_dir"],
+            ctx["derived_dir"],
+            operation_id,
+            staged_uploads,
+            staging_root,
+        )
+        operation = get_upload_operation(ctx["db_path"], operation_id)
         return JSONResponse(
             {
-                "upload": {
-                    "stored": result.stored,
-                    "supported_images": result.supported_images,
-                    "ignored": result.ignored,
-                    "created_references": result.created_references,
-                },
-                "processing": processing,
-            }
+                "status": "accepted",
+                "operation_id": operation_id,
+                "operation": operation,
+            },
+            status_code=202,
         )
 
     @app.get("/api/projects/{project_id}/uploads/progress")
     def get_project_upload_progress(project_id: str) -> JSONResponse:
-        _ctx(project_id)
-        progress = _get_upload_progress(project_id)
-        progress["project_id"] = project_id
-        return JSONResponse(progress)
+        ctx = _ctx(project_id)
+        if mark_stale_upload_operations(ctx["db_path"]) > 0:
+            set_cluster_state(ctx["db_path"], "final", None)
+        operation = get_latest_upload_operation(ctx["db_path"], active_only=True) or get_latest_upload_operation(
+            ctx["db_path"],
+            active_only=False,
+        )
+        if operation is None:
+            return JSONResponse(
+                {
+                    "active": False,
+                    "operation_id": None,
+                    "phase": "idle",
+                    "status": "idle",
+                    "percent": 0,
+                    "message": "Idle",
+                    "files_total": 0,
+                    "files_done": 0,
+                    "stacks_visible": 0,
+                    "error": None,
+                    "project_id": project_id,
+                }
+            )
+        return JSONResponse(
+            {
+                "active": operation.get("status") == "running",
+                "operation_id": operation.get("id"),
+                "phase": operation.get("phase"),
+                "status": operation.get("status"),
+                "percent": operation.get("percent"),
+                "message": operation.get("message"),
+                "files_total": operation.get("files_total"),
+                "files_done": operation.get("files_done"),
+                "stacks_visible": operation.get("stacks_visible"),
+                "error": operation.get("error"),
+                "project_id": project_id,
+                "updated_at": operation.get("updated_at"),
+            }
+        )
+
+    @app.get("/api/projects/{project_id}/operations/{operation_id}")
+    def get_project_operation(project_id: str, operation_id: str) -> JSONResponse:
+        ctx = _ctx(project_id)
+        if mark_stale_upload_operations(ctx["db_path"]) > 0:
+            set_cluster_state(ctx["db_path"], "final", None)
+        operation = get_upload_operation(ctx["db_path"], operation_id)
+        if operation is None:
+            raise HTTPException(status_code=404, detail="Operation not found")
+        return JSONResponse(
+            {
+                "operation": operation,
+                "cluster_state": get_cluster_state(ctx["db_path"]),
+            }
+        )
+
+    @app.get("/api/projects/{project_id}/operations/{operation_id}/events")
+    async def stream_project_operation_events(project_id: str, operation_id: str, after_id: int = 0) -> StreamingResponse:
+        ctx = _ctx(project_id)
+        operation = get_upload_operation(ctx["db_path"], operation_id)
+        if operation is None:
+            raise HTTPException(status_code=404, detail="Operation not found")
+
+        async def _event_stream() -> Any:
+            last_id = max(0, int(after_id))
+            yield "retry: 1000\n\n"
+            while True:
+                events = await run_in_threadpool(
+                    lambda: list_upload_operation_events(
+                        ctx["db_path"],
+                        operation_id,
+                        after_id=last_id,
+                        limit=250,
+                    )
+                )
+                for event in events:
+                    last_id = max(last_id, int(event["id"]))
+                    data = {
+                        "event_id": int(event["id"]),
+                        "event_type": str(event["event_type"]),
+                        "created_at": str(event["created_at"]),
+                        **event["data"],
+                    }
+                    yield (
+                        f"id: {event['id']}\n"
+                        f"event: {event['event_type']}\n"
+                        f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+                    )
+
+                snapshot = await run_in_threadpool(get_upload_operation, ctx["db_path"], operation_id)
+                if snapshot is None:
+                    break
+                if snapshot.get("status") in {"completed", "failed"}:
+                    done_payload = {
+                        "event_type": "done",
+                        "operation_id": snapshot.get("id"),
+                        "status": snapshot.get("status"),
+                        "phase": snapshot.get("phase"),
+                        "percent": snapshot.get("percent"),
+                        "message": snapshot.get("message"),
+                        "files_total": snapshot.get("files_total"),
+                        "files_done": snapshot.get("files_done"),
+                        "stacks_visible": snapshot.get("stacks_visible"),
+                        "error": snapshot.get("error"),
+                        "updated_at": snapshot.get("updated_at"),
+                    }
+                    yield f"event: done\ndata: {json.dumps(done_payload, separators=(',', ':'))}\n\n"
+                    break
+
+                yield ": heartbeat\n\n"
+                await asyncio.sleep(0.4)
+
+        return StreamingResponse(
+            _event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/api/projects/{project_id}/references/{reference_id}/image")
     def get_project_reference_image(project_id: str, reference_id: int) -> FileResponse:
@@ -453,7 +722,8 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/process")
     def post_project_process(project_id: str) -> JSONResponse:
         ctx = _ctx(project_id)
-        summary = run_clustering_pipeline(ctx["db_path"])
+        summary = run_clustering_pipeline(ctx["db_path"], mode="final")
+        set_cluster_state(ctx["db_path"], "final", None)
         return JSONResponse({"summary": summary})
 
     @app.get("/api/projects/{project_id}/duplicates")
@@ -468,8 +738,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Project not found")
 
         reset_project_storage(project_id)
-        _set_upload_progress(project_id, **_default_upload_progress())
         ctx = _ctx(project_id)
+        set_cluster_state(ctx["db_path"], "final", None)
         return JSONResponse({"status": "ok", "project_id": project_id, "db_path": str(ctx["db_path"])})
 
     # Project-scoped API surface.
@@ -489,7 +759,9 @@ def create_app() -> FastAPI:
     @app.get("/api/projects/{project_id}/stacks")
     def get_project_stacks(project_id: str) -> JSONResponse:
         ctx = _ctx(project_id)
-        return JSONResponse({"items": list_stacks(ctx["db_path"])})
+        if mark_stale_upload_operations(ctx["db_path"]) > 0:
+            set_cluster_state(ctx["db_path"], "final", None)
+        return JSONResponse(_stack_payload(ctx["db_path"]))
 
     @app.post("/api/projects/{project_id}/stacks/{stack_id}/split")
     def post_project_stack_split(project_id: str, stack_id: str, payload: StackSplitRequest) -> JSONResponse:
@@ -507,7 +779,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=404, detail="Stack not found") from exc
             raise HTTPException(status_code=400, detail=reason) from exc
 
-        return JSONResponse({"status": "ok", "result": result, "items": list_stacks(ctx["db_path"])})
+        return JSONResponse({"status": "ok", "result": result, **_stack_payload(ctx["db_path"])})
 
     @app.post("/api/projects/{project_id}/duel/pick")
     def post_project_duel_pick(project_id: str, payload: DuelPickRequest) -> JSONResponse:
@@ -522,12 +794,14 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/themes")
     def post_project_theme(project_id: str, payload: ThemeCreateRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         created = create_theme(ctx["db_path"], payload.title, payload.color)
         return JSONResponse(created, status_code=201)
 
     @app.patch("/api/projects/{project_id}/themes/{theme_id}")
     def patch_project_theme(project_id: str, theme_id: int, payload: ThemePatchRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         if not theme_exists(ctx["db_path"], theme_id):
             raise HTTPException(status_code=404, detail="Theme not found")
         updated = update_theme(ctx["db_path"], theme_id, payload.model_dump(exclude_unset=True))
@@ -536,12 +810,14 @@ def create_app() -> FastAPI:
     @app.delete("/api/projects/{project_id}/themes/{theme_id}")
     def delete_project_theme(project_id: str, theme_id: int) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         delete_theme(ctx["db_path"], theme_id)
         return JSONResponse({"status": "ok"})
 
     @app.post("/api/projects/{project_id}/themes/assign")
     def assign_project_theme(project_id: str, payload: ThemeAssignRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         if payload.theme_id is not None and not theme_exists(ctx["db_path"], payload.theme_id):
             raise HTTPException(status_code=404, detail="Theme not found")
         assign_stack_theme(ctx["db_path"], payload.stack_id, payload.theme_id)
@@ -560,6 +836,7 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/chapters")
     def post_project_chapter(project_id: str, payload: ChapterCreateRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         chapter_id = create_chapter(ctx["db_path"], payload.name, page_count=payload.page_count)
         chapters = list_chapters(ctx["db_path"])
         created = next((item for item in chapters if item["id"] == chapter_id), None)
@@ -568,6 +845,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/projects/{project_id}/chapters/{chapter_id}")
     def patch_project_chapter(project_id: str, chapter_id: int, payload: ChapterUpdateRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         if not chapter_exists(ctx["db_path"], chapter_id):
             raise HTTPException(status_code=404, detail="Chapter not found")
         update_chapter_name(ctx["db_path"], chapter_id, payload.name)
@@ -578,6 +856,7 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/chapters/reorder")
     def reorder_project_chapters(project_id: str, payload: ChapterReorderRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         reorder_chapters(ctx["db_path"], payload.chapter_ids)
         return JSONResponse({"status": "ok"})
 
@@ -591,6 +870,7 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/chapters/{chapter_id}/pages")
     def post_project_pages(project_id: str, chapter_id: int, payload: ChapterPagesRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         if not chapter_exists(ctx["db_path"], chapter_id):
             raise HTTPException(status_code=404, detail="Chapter not found")
         sync_pages_for_chapter(ctx["db_path"], chapter_id, payload.page_count)
@@ -606,6 +886,7 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/pages/{page_id}/items")
     def post_project_page_item(project_id: str, page_id: int, payload: PageItemCreateRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         if not page_exists(ctx["db_path"], page_id):
             raise HTTPException(status_code=404, detail="Page not found")
 
@@ -624,6 +905,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/projects/{project_id}/pages/items/{item_id}")
     def patch_project_page_item(project_id: str, item_id: int, payload: PageItemUpdateRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         if not item_exists(ctx["db_path"], item_id):
             raise HTTPException(status_code=404, detail="Page item not found")
 
@@ -638,12 +920,14 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/book/auto-build")
     def post_project_auto_build(project_id: str) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         chapters = auto_build_book(ctx["db_path"])
         return JSONResponse({"chapters": chapters})
 
     @app.post("/api/projects/{project_id}/export")
     def post_project_export(project_id: str, payload: ExportRequest) -> JSONResponse:
         ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
         chapters = list_pages_with_items(ctx["db_path"], payload.chapter_ids)
         references = list_references(ctx["db_path"])
         if payload.chapter_ids is None and not chapters and references:
@@ -678,7 +962,9 @@ def create_app() -> FastAPI:
     @app.get("/api/stacks")
     def get_stacks() -> JSONResponse:
         ctx = _ctx(None)
-        return JSONResponse({"items": list_stacks(ctx["db_path"])})
+        if mark_stale_upload_operations(ctx["db_path"]) > 0:
+            set_cluster_state(ctx["db_path"], "final", None)
+        return JSONResponse(_stack_payload(ctx["db_path"]))
 
     @app.post("/api/stacks/{stack_id}/split")
     def post_stack_split(stack_id: str, payload: StackSplitRequest) -> JSONResponse:
@@ -695,7 +981,7 @@ def create_app() -> FastAPI:
             if reason == "stack_not_found":
                 raise HTTPException(status_code=404, detail="Stack not found") from exc
             raise HTTPException(status_code=400, detail=reason) from exc
-        return JSONResponse({"status": "ok", "result": result, "items": list_stacks(ctx["db_path"])})
+        return JSONResponse({"status": "ok", "result": result, **_stack_payload(ctx["db_path"])})
 
     @app.post("/api/duel/pick")
     def post_duel_pick(payload: DuelPickRequest) -> JSONResponse:
@@ -710,12 +996,14 @@ def create_app() -> FastAPI:
     @app.post("/api/themes")
     def post_theme(payload: ThemeCreateRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         created = create_theme(ctx["db_path"], payload.title, payload.color)
         return JSONResponse(created, status_code=201)
 
     @app.patch("/api/themes/{theme_id}")
     def patch_theme(theme_id: int, payload: ThemePatchRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         if not theme_exists(ctx["db_path"], theme_id):
             raise HTTPException(status_code=404, detail="Theme not found")
         updated = update_theme(ctx["db_path"], theme_id, payload.model_dump(exclude_unset=True))
@@ -724,12 +1012,14 @@ def create_app() -> FastAPI:
     @app.delete("/api/themes/{theme_id}")
     def remove_theme(theme_id: int) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         delete_theme(ctx["db_path"], theme_id)
         return JSONResponse({"status": "ok"})
 
     @app.post("/api/themes/assign")
     def post_theme_assignment(payload: ThemeAssignRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         if payload.theme_id is not None and not theme_exists(ctx["db_path"], payload.theme_id):
             raise HTTPException(status_code=404, detail="Theme not found")
         assign_stack_theme(ctx["db_path"], payload.stack_id, payload.theme_id)
@@ -748,6 +1038,7 @@ def create_app() -> FastAPI:
     @app.post("/api/chapters")
     def post_chapter(payload: ChapterCreateRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         chapter_id = create_chapter(ctx["db_path"], payload.name, page_count=payload.page_count)
         chapters = list_chapters(ctx["db_path"])
         created = next((item for item in chapters if item["id"] == chapter_id), None)
@@ -756,6 +1047,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/chapters/{chapter_id}")
     def patch_chapter(chapter_id: int, payload: ChapterUpdateRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         if not chapter_exists(ctx["db_path"], chapter_id):
             raise HTTPException(status_code=404, detail="Chapter not found")
         update_chapter_name(ctx["db_path"], chapter_id, payload.name)
@@ -766,6 +1058,7 @@ def create_app() -> FastAPI:
     @app.post("/api/chapters/reorder")
     def post_reorder(payload: ChapterReorderRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         reorder_chapters(ctx["db_path"], payload.chapter_ids)
         return JSONResponse({"status": "ok"})
 
@@ -779,6 +1072,7 @@ def create_app() -> FastAPI:
     @app.post("/api/chapters/{chapter_id}/pages")
     def post_pages(chapter_id: int, payload: ChapterPagesRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         if not chapter_exists(ctx["db_path"], chapter_id):
             raise HTTPException(status_code=404, detail="Chapter not found")
         sync_pages_for_chapter(ctx["db_path"], chapter_id, payload.page_count)
@@ -794,6 +1088,7 @@ def create_app() -> FastAPI:
     @app.post("/api/pages/{page_id}/items")
     def post_page_item(page_id: int, payload: PageItemCreateRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         if not page_exists(ctx["db_path"], page_id):
             raise HTTPException(status_code=404, detail="Page not found")
 
@@ -812,6 +1107,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/pages/items/{item_id}")
     def patch_page_item(item_id: int, payload: PageItemUpdateRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         if not item_exists(ctx["db_path"], item_id):
             raise HTTPException(status_code=404, detail="Page item not found")
         updates = payload.model_dump(exclude_unset=True)
@@ -824,12 +1120,14 @@ def create_app() -> FastAPI:
     @app.post("/api/book/auto-build")
     def post_auto_build() -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         chapters = auto_build_book(ctx["db_path"])
         return JSONResponse({"chapters": chapters})
 
     @app.post("/api/export")
     def export(payload: ExportRequest) -> JSONResponse:
         ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
         chapters = list_pages_with_items(ctx["db_path"], payload.chapter_ids)
         references = list_references(ctx["db_path"])
         if payload.chapter_ids is None and not chapters and references:

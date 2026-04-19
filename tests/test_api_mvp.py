@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 import errno
 from pathlib import Path
+import time
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -21,6 +22,20 @@ def _project_client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.delenv("PHOTOBOOK_DB_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
     return TestClient(create_app())
+
+
+def _wait_for_operation(client: TestClient, project_id: str, operation_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    last = {}
+    while time.time() < deadline:
+        response = client.get(f"/api/projects/{project_id}/operations/{operation_id}")
+        assert response.status_code == 200
+        payload = response.json()["operation"]
+        last = payload
+        if payload.get("status") in {"completed", "failed"}:
+            return payload
+        time.sleep(0.05)
+    raise AssertionError(f"Operation {operation_id} did not complete in time; last={last}")
 
 
 def test_health_and_darkroom_shell(tmp_path, monkeypatch) -> None:
@@ -205,10 +220,13 @@ def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None
             ("relative_paths", (None, "Vacation 2026/Day 1/day1.jpg")),
         ],
     )
-    assert upload.status_code == 200
-    upload_info = upload.json()["upload"]
-    assert upload_info["stored"] == 1
-    assert upload_info["supported_images"] == 1
+    assert upload.status_code == 202
+    operation_id = upload.json()["operation_id"]
+    done = _wait_for_operation(client, project_id, operation_id)
+    assert done["status"] == "completed"
+    assert done["phase"] == "completed"
+    assert int(done["percent"]) == 100
+
     upload_progress = client.get(f"/api/projects/{project_id}/uploads/progress")
     assert upload_progress.status_code == 200
     progress_payload = upload_progress.json()
@@ -223,7 +241,9 @@ def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None
 
     stacks = client.get(f"/api/projects/{project_id}/stacks")
     assert stacks.status_code == 200
-    first_photo_id = stacks.json()["items"][0]["photos"][0]["id"]
+    stacks_payload = stacks.json()
+    assert stacks_payload["cluster_state"]["state"] in {"provisional", "final"}
+    first_photo_id = stacks_payload["items"][0]["photos"][0]["id"]
 
     image_response = client.get(f"/api/projects/{project_id}/references/{first_photo_id}/image")
     assert image_response.status_code == 200
@@ -297,6 +317,64 @@ def test_stack_split_endpoint(tmp_path, monkeypatch) -> None:
         json={"reference_ids": target["photo_ids"]},
     )
     assert split_again.status_code == 400
+
+
+def test_new_additions_unresolve_previous_pick(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+    project = client.post("/api/projects", json={"name": "Review Test"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    image_a = Image.new("RGB", (40, 30), color=(40, 80, 120))
+    image_b = Image.new("RGB", (40, 30), color=(45, 85, 125))
+    image_c = Image.new("RGB", (40, 30), color=(40, 80, 120))
+    path_a = tmp_path / "review_a.jpg"
+    path_b = tmp_path / "review_b.jpg"
+    path_c = tmp_path / "review_c.jpg"
+    image_a.save(path_a)
+    image_b.save(path_b)
+    image_c.save(path_c)
+
+    seed = client.post(
+        f"/api/projects/{project_id}/intake/references",
+        json={
+            "items": [
+                {"source": str(path_a), "source_type": "path", "label": "A", "metadata": {}},
+                {"source": str(path_b), "source_type": "path", "label": "B", "metadata": {}},
+            ]
+        },
+    )
+    assert seed.status_code == 200
+
+    process = client.post(f"/api/projects/{project_id}/process", json={})
+    assert process.status_code == 200
+    initial_stacks = client.get(f"/api/projects/{project_id}/stacks").json()["items"]
+    target = next((item for item in initial_stacks if len(item["photo_ids"]) > 1), None)
+    assert target is not None
+
+    initial_pick = int(target["photo_ids"][0])
+    pick_res = client.post(
+        f"/api/projects/{project_id}/duel/pick",
+        json={"stack_id": target["id"], "reference_id": initial_pick},
+    )
+    assert pick_res.status_code == 200
+
+    add_ref = client.post(
+        f"/api/projects/{project_id}/intake/references",
+        json={"items": [{"source": str(path_c), "source_type": "path", "label": "C", "metadata": {}}]},
+    )
+    assert add_ref.status_code == 200
+    added_ref_id = int(add_ref.json()["items"][-1]["id"])
+
+    reprocess = client.post(f"/api/projects/{project_id}/process", json={})
+    assert reprocess.status_code == 200
+    stacks_after = client.get(f"/api/projects/{project_id}/stacks").json()["items"]
+    reviewed = next((item for item in stacks_after if added_ref_id in item["photo_ids"]), None)
+    assert reviewed is not None
+    assert reviewed["needs_review"] is True
+    assert reviewed["resolved"] is False
+    assert reviewed["previous_pick_reference_id"] == initial_pick
+    assert added_ref_id in reviewed["new_reference_ids"]
 
 
 def test_reset_project_storage_tolerates_enotempty(tmp_path, monkeypatch) -> None:

@@ -100,6 +100,14 @@ class UploadResult:
     created_references: int
 
 
+@dataclass
+class StagedUpload:
+    filename: str
+    content_type: str | None
+    staged_path: Path
+    relative_path: str | None = None
+
+
 def process_uploads(
     db_path: Path,
     originals_dir: Path,
@@ -207,6 +215,117 @@ def process_uploads(
 
         if progress_callback is not None:
             progress_callback(index + 1, len(files), relative_path or original_name)
+
+    return UploadResult(
+        stored=stored,
+        supported_images=supported_images,
+        ignored=ignored,
+        created_references=created_references,
+    )
+
+
+def process_staged_uploads(
+    db_path: Path,
+    originals_dir: Path,
+    derived_dir: Path,
+    uploads: list[StagedUpload],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> UploadResult:
+    originals_dir.mkdir(parents=True, exist_ok=True)
+    derived_dir.mkdir(parents=True, exist_ok=True)
+
+    created_references = 0
+    supported_images = 0
+    ignored = 0
+    stored = 0
+
+    for index, incoming in enumerate(uploads):
+        original_name = incoming.filename or "file"
+        relative_path = _normalize_relative_path(incoming.relative_path)
+
+        relative_filename = Path(relative_path).name if relative_path else original_name
+        safe_name = _safe_name(relative_filename)
+        ext = Path(safe_name).suffix.lower()
+        prefix = uuid.uuid4().hex[:10]
+        stored_name = f"{prefix}_{safe_name}"
+        relative_parent = Path(relative_path).parent if relative_path else Path()
+        original_path = originals_dir / relative_parent / stored_name
+        original_path.parent.mkdir(parents=True, exist_ok=True)
+
+        data = incoming.staged_path.read_bytes()
+        stored += 1
+        sha = _sha256_bytes(data)
+
+        original_path.write_bytes(data)
+        size_bytes = len(data)
+        content_type = incoming.content_type
+
+        is_supported = _guess_image_supported(safe_name, content_type)
+        ignored_reason: str | None = None
+        derived_path: Path | None = None
+
+        if is_supported:
+            if ext in {".heic", ".heif"} and not HEIF_ENABLED:
+                is_supported = False
+                ignored_reason = "heic_not_supported"
+            else:
+                jpeg_data = _convert_to_jpeg(data)
+                if jpeg_data is None:
+                    is_supported = False
+                    ignored_reason = "unsupported_image_data"
+                else:
+                    derived_name = f"{Path(stored_name).stem}.jpg"
+                    derived_path = derived_dir / relative_parent / derived_name
+                    derived_path.parent.mkdir(parents=True, exist_ok=True)
+                    derived_path.write_bytes(jpeg_data)
+
+        upload_id = create_upload(
+            db_path,
+            filename=original_name,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            sha256=sha,
+            original_path=str(original_path.resolve()),
+            derived_path=str(derived_path.resolve()) if derived_path else None,
+            is_supported_image=is_supported,
+            ignored_reason=ignored_reason,
+            metadata={
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "extension": ext,
+                "heif_enabled": HEIF_ENABLED,
+                "relative_path": relative_path,
+                "stored_original_relative_path": str(original_path.relative_to(originals_dir)).replace("\\", "/"),
+                "stored_derived_relative_path": (
+                    str(derived_path.relative_to(derived_dir)).replace("\\", "/")
+                    if derived_path is not None
+                    else None
+                ),
+            },
+        )
+
+        if is_supported and derived_path is not None:
+            supported_images += 1
+            upsert_references(
+                db_path,
+                [
+                    {
+                        "source": str(derived_path.resolve()),
+                        "source_type": "path",
+                        "label": Path(original_name).stem,
+                        "metadata": {
+                            "upload_id": upload_id,
+                            "original_filename": original_name,
+                            "date": datetime.now(timezone.utc).date().isoformat(),
+                        },
+                    }
+                ],
+            )
+            created_references += 1
+        else:
+            ignored += 1
+
+        if progress_callback is not None:
+            progress_callback(index + 1, len(uploads), relative_path or original_name)
 
     return UploadResult(
         stored=stored,

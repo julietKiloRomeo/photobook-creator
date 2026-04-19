@@ -113,6 +113,45 @@ CREATE TABLE IF NOT EXISTS stack_split_overrides (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(reference_id) REFERENCES intake_references(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS cluster_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state TEXT NOT NULL DEFAULT 'final',
+    operation_id TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS stack_review_state (
+    stack_id TEXT PRIMARY KEY,
+    previous_pick_reference_id INTEGER,
+    new_reference_ids_json TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT 'new_additions',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(previous_pick_reference_id) REFERENCES intake_references(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS upload_operations (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    percent INTEGER NOT NULL DEFAULT 0,
+    files_total INTEGER NOT NULL DEFAULT 0,
+    files_done INTEGER NOT NULL DEFAULT 0,
+    stacks_visible INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS upload_operation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(operation_id) REFERENCES upload_operations(id) ON DELETE CASCADE
+);
 """
 
 
@@ -358,25 +397,159 @@ def clear_stack_clusters(db_path: Path) -> None:
         conn.execute("DELETE FROM stack_clusters")
 
 
+def _stack_clusters_by_id(clusters: list[dict[str, Any]]) -> dict[str, set[int]]:
+    by_id: dict[str, set[int]] = {}
+    for cluster in clusters:
+        stack_id = str(cluster.get("stack_id") or "")
+        if not stack_id:
+            continue
+        by_id[stack_id] = {int(reference_id) for reference_id in cluster.get("reference_ids", [])}
+    return by_id
+
+
 def set_stack_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> None:
-    clear_stack_clusters(db_path)
     rows: list[tuple[str, int, str, int]] = []
+    new_clusters = _stack_clusters_by_id(clusters)
     for index, cluster in enumerate(clusters):
         stack_id = str(cluster["stack_id"])
         label = str(cluster.get("label") or f"Stack {index + 1}")
         for reference_id in cluster.get("reference_ids", []):
             rows.append((stack_id, int(reference_id), label, index + 1))
-    if not rows:
-        return
 
     with _connect(db_path) as conn:
-        conn.executemany(
+        conn.row_factory = sqlite3.Row
+        old_cluster_rows = conn.execute(
             """
-            INSERT INTO stack_clusters (stack_id, reference_id, label, order_index)
-            VALUES (?, ?, ?, ?)
-            """,
-            rows,
-        )
+            SELECT stack_id, reference_id
+            FROM stack_clusters
+            ORDER BY stack_id, reference_id
+            """
+        ).fetchall()
+        old_pick_rows = conn.execute("SELECT stack_id, reference_id FROM stack_picks").fetchall()
+        old_review_rows = conn.execute(
+            """
+            SELECT stack_id, previous_pick_reference_id, new_reference_ids_json, reason
+            FROM stack_review_state
+            ORDER BY stack_id
+            """
+        ).fetchall()
+
+        old_clusters: dict[str, set[int]] = {}
+        for row in old_cluster_rows:
+            old_clusters.setdefault(str(row["stack_id"]), set()).add(int(row["reference_id"]))
+        old_picks = {str(row["stack_id"]): int(row["reference_id"]) for row in old_pick_rows}
+
+        old_reviews: dict[str, dict[str, Any]] = {}
+        for row in old_review_rows:
+            payload = dict(row)
+            old_reviews[str(payload["stack_id"])] = {
+                "previous_pick_reference_id": (
+                    int(payload["previous_pick_reference_id"])
+                    if payload["previous_pick_reference_id"] is not None
+                    else None
+                ),
+                "new_reference_ids": [int(item) for item in json.loads(payload["new_reference_ids_json"] or "[]")],
+                "reason": str(payload["reason"] or "new_additions"),
+            }
+
+        mapped_old_for_new: dict[str, str] = {}
+        used_old: set[str] = set()
+        for new_stack_id, new_refs in sorted(new_clusters.items()):
+            best_old: str | None = None
+            best_overlap = 0
+            best_ratio = -1.0
+            for old_stack_id, old_refs in old_clusters.items():
+                if old_stack_id in used_old:
+                    continue
+                overlap = len(new_refs.intersection(old_refs))
+                if overlap <= 0:
+                    continue
+                ratio = overlap / max(len(old_refs), 1)
+                if overlap > best_overlap or (overlap == best_overlap and ratio > best_ratio):
+                    best_old = old_stack_id
+                    best_overlap = overlap
+                    best_ratio = ratio
+            if best_old is not None:
+                mapped_old_for_new[new_stack_id] = best_old
+                used_old.add(best_old)
+
+        desired_picks: dict[str, int] = {}
+        desired_reviews: dict[str, dict[str, Any]] = {}
+        for new_stack_id, new_refs in new_clusters.items():
+            source_stack_id = mapped_old_for_new.get(new_stack_id, new_stack_id)
+            old_refs = old_clusters.get(source_stack_id, set())
+            candidate_pick = old_picks.get(source_stack_id)
+            if candidate_pick is not None and candidate_pick not in new_refs:
+                candidate_pick = None
+
+            gained_refs = sorted(new_refs.difference(old_refs))
+            if candidate_pick is not None and gained_refs:
+                desired_reviews[new_stack_id] = {
+                    "previous_pick_reference_id": candidate_pick,
+                    "new_reference_ids": gained_refs,
+                    "reason": "new_additions",
+                }
+            elif candidate_pick is not None:
+                desired_picks[new_stack_id] = candidate_pick
+
+            inherited_review = old_reviews.get(source_stack_id)
+            if inherited_review is not None:
+                previous_pick = inherited_review.get("previous_pick_reference_id")
+                if previous_pick is not None and int(previous_pick) not in new_refs:
+                    previous_pick = None
+                inherited_new_ids = {
+                    int(reference_id)
+                    for reference_id in inherited_review.get("new_reference_ids", [])
+                    if int(reference_id) in new_refs
+                }
+                inherited_new_ids.update(gained_refs)
+                if previous_pick is not None and inherited_new_ids:
+                    desired_reviews[new_stack_id] = {
+                        "previous_pick_reference_id": int(previous_pick),
+                        "new_reference_ids": sorted(inherited_new_ids),
+                        "reason": str(inherited_review.get("reason") or "new_additions"),
+                    }
+                    desired_picks.pop(new_stack_id, None)
+
+        conn.execute("DELETE FROM stack_clusters")
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO stack_clusters (stack_id, reference_id, label, order_index)
+                VALUES (?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+        conn.execute("DELETE FROM stack_picks")
+        if desired_picks:
+            conn.executemany(
+                """
+                INSERT INTO stack_picks (stack_id, reference_id, updated_at)
+                VALUES (?, ?, datetime('now'))
+                """,
+                [(stack_id, reference_id) for stack_id, reference_id in sorted(desired_picks.items())],
+            )
+
+        conn.execute("DELETE FROM stack_review_state")
+        if desired_reviews:
+            conn.executemany(
+                """
+                INSERT INTO stack_review_state (
+                  stack_id, previous_pick_reference_id, new_reference_ids_json, reason, updated_at
+                )
+                VALUES (?, ?, ?, ?, datetime('now'))
+                """,
+                [
+                    (
+                        stack_id,
+                        payload["previous_pick_reference_id"],
+                        json.dumps(payload["new_reference_ids"], separators=(",", ":")),
+                        payload["reason"],
+                    )
+                    for stack_id, payload in sorted(desired_reviews.items())
+                ],
+            )
 
 
 def list_stack_clusters(db_path: Path) -> list[dict[str, Any]]:
@@ -409,6 +582,284 @@ def list_stack_clusters(db_path: Path) -> list[dict[str, Any]]:
     for cluster in ordered:
         cluster["reference_ids"] = sorted(cluster["reference_ids"])
     return ordered
+
+
+def list_stack_review_state(db_path: Path) -> dict[str, dict[str, Any]]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT stack_id, previous_pick_reference_id, new_reference_ids_json, reason, updated_at
+            FROM stack_review_state
+            ORDER BY stack_id
+            """
+        ).fetchall()
+
+    output: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        payload = dict(row)
+        output[str(payload["stack_id"])] = {
+            "previous_pick_reference_id": (
+                int(payload["previous_pick_reference_id"])
+                if payload["previous_pick_reference_id"] is not None
+                else None
+            ),
+            "new_reference_ids": [int(item) for item in json.loads(payload["new_reference_ids_json"] or "[]")],
+            "reason": str(payload["reason"] or "new_additions"),
+            "updated_at": str(payload["updated_at"]),
+        }
+    return output
+
+
+def clear_stack_review_state(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM stack_review_state")
+
+
+def set_cluster_state(db_path: Path, state: str, operation_id: str | None = None) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO cluster_state (id, state, operation_id, updated_at)
+            VALUES (1, ?, ?, datetime('now'))
+            ON CONFLICT(id)
+            DO UPDATE SET
+              state = excluded.state,
+              operation_id = excluded.operation_id,
+              updated_at = datetime('now')
+            """,
+            (state, operation_id),
+        )
+
+
+def get_cluster_state(db_path: Path) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT state, operation_id, updated_at FROM cluster_state WHERE id = 1").fetchone()
+    if row is None:
+        return {"state": "final", "operation_id": None, "updated_at": datetime.now(timezone.utc).isoformat()}
+    payload = dict(row)
+    return {
+        "state": str(payload["state"] or "final"),
+        "operation_id": payload["operation_id"],
+        "updated_at": str(payload["updated_at"]),
+    }
+
+
+def create_upload_operation(db_path: Path, operation_id: str, *, files_total: int) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO upload_operations (
+              id, status, phase, message, percent, files_total, files_done, stacks_visible, error, created_at, updated_at
+            )
+            VALUES (?, 'running', 'uploading', 'Receiving files', 0, ?, 0, 0, NULL, datetime('now'), datetime('now'))
+            """,
+            (operation_id, int(files_total)),
+        )
+    return update_upload_operation(
+        db_path,
+        operation_id,
+        status="running",
+        phase="uploading",
+        message="Receiving files",
+        percent=0,
+        files_total=int(files_total),
+        files_done=0,
+        stacks_visible=0,
+        append_event=True,
+    )
+
+
+def update_upload_operation(
+    db_path: Path,
+    operation_id: str,
+    *,
+    status: str | None = None,
+    phase: str | None = None,
+    message: str | None = None,
+    percent: int | None = None,
+    files_total: int | None = None,
+    files_done: int | None = None,
+    stacks_visible: int | None = None,
+    error: str | None = None,
+    append_event: bool = True,
+) -> dict[str, Any]:
+    updates: list[str] = []
+    values: list[Any] = []
+    if status is not None:
+        updates.append("status = ?")
+        values.append(status)
+    if phase is not None:
+        updates.append("phase = ?")
+        values.append(phase)
+    if message is not None:
+        updates.append("message = ?")
+        values.append(message)
+    if percent is not None:
+        updates.append("percent = ?")
+        values.append(int(percent))
+    if files_total is not None:
+        updates.append("files_total = ?")
+        values.append(int(files_total))
+    if files_done is not None:
+        updates.append("files_done = ?")
+        values.append(int(files_done))
+    if stacks_visible is not None:
+        updates.append("stacks_visible = ?")
+        values.append(int(stacks_visible))
+    if error is not None:
+        updates.append("error = ?")
+        values.append(error)
+
+    if updates:
+        with _connect(db_path) as conn:
+            conn.execute(
+                f"UPDATE upload_operations SET {', '.join(updates)}, updated_at = datetime('now') WHERE id = ?",
+                [*values, operation_id],
+            )
+
+    current = get_upload_operation(db_path, operation_id)
+    if current is None:
+        return {}
+
+    if append_event:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO upload_operation_events (operation_id, event_type, payload_json)
+                VALUES (?, 'status', ?)
+                """,
+                (
+                    operation_id,
+                    json.dumps(
+                        {
+                            "operation_id": current.get("id"),
+                            "status": current.get("status"),
+                            "phase": current.get("phase"),
+                            "message": current.get("message"),
+                            "percent": current.get("percent"),
+                            "files_total": current.get("files_total"),
+                            "files_done": current.get("files_done"),
+                            "stacks_visible": current.get("stacks_visible"),
+                            "error": current.get("error"),
+                            "updated_at": current.get("updated_at"),
+                        },
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+
+    return current
+
+
+def get_upload_operation(db_path: Path, operation_id: str) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, status, phase, message, percent, files_total, files_done, stacks_visible, error, created_at, updated_at
+            FROM upload_operations
+            WHERE id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["percent"] = int(payload.get("percent") or 0)
+    payload["files_total"] = int(payload.get("files_total") or 0)
+    payload["files_done"] = int(payload.get("files_done") or 0)
+    payload["stacks_visible"] = int(payload.get("stacks_visible") or 0)
+    return payload
+
+
+def get_latest_upload_operation(db_path: Path, *, active_only: bool = False) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        if active_only:
+            row = conn.execute(
+                """
+                SELECT id, status, phase, message, percent, files_total, files_done, stacks_visible, error, created_at, updated_at
+                FROM upload_operations
+                WHERE status = 'running'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id, status, phase, message, percent, files_total, files_done, stacks_visible, error, created_at, updated_at
+                FROM upload_operations
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["percent"] = int(payload.get("percent") or 0)
+    payload["files_total"] = int(payload.get("files_total") or 0)
+    payload["files_done"] = int(payload.get("files_done") or 0)
+    payload["stacks_visible"] = int(payload.get("stacks_visible") or 0)
+    return payload
+
+
+def list_upload_operation_events(db_path: Path, operation_id: str, *, after_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, operation_id, event_type, payload_json, created_at
+            FROM upload_operation_events
+            WHERE operation_id = ? AND id > ?
+            ORDER BY id
+            LIMIT ?
+            """,
+            (operation_id, int(after_id), int(limit)),
+        ).fetchall()
+
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        payload = dict(row)
+        payload["data"] = json.loads(payload.pop("payload_json") or "{}")
+        events.append(payload)
+    return events
+
+
+def mark_stale_upload_operations(db_path: Path, *, stale_seconds: int = 120) -> int:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM upload_operations
+            WHERE status = 'running'
+              AND updated_at < datetime('now', ?)
+            ORDER BY updated_at
+            """,
+            (f"-{int(stale_seconds)} seconds",),
+        ).fetchall()
+    stale_ids = [str(row[0]) for row in rows]
+    for operation_id in stale_ids:
+        update_upload_operation(
+            db_path,
+            operation_id,
+            status="failed",
+            phase="failed",
+            message="Upload worker interrupted",
+            error="worker_interrupted",
+            percent=100,
+            append_event=True,
+        )
+    return len(stale_ids)
+
+
+def clear_upload_operations(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM upload_operation_events")
+        conn.execute("DELETE FROM upload_operations")
 
 
 def list_stack_split_overrides(db_path: Path) -> dict[int, dict[str, str]]:
@@ -527,6 +978,9 @@ def split_stack_cluster(
 def clear_processing_state(db_path: Path) -> None:
     clear_duplicate_groups(db_path)
     clear_stack_clusters(db_path)
+    clear_stack_review_state(db_path)
+    clear_upload_operations(db_path)
+    set_cluster_state(db_path, "final", None)
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM stack_picks")
         conn.execute("DELETE FROM theme_stacks")
@@ -880,6 +1334,7 @@ def pick_stack_reference(db_path: Path, stack_id: str, reference_id: int) -> Non
             """,
             (stack_id, reference_id),
         )
+        conn.execute("DELETE FROM stack_review_state WHERE stack_id = ?", (stack_id,))
 
 
 def _default_stack_color(reference_id: int) -> str:
@@ -1041,6 +1496,7 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
         stacks = derive_stacks(db_path)
 
     picks = _stack_pick_map(db_path)
+    review_map = list_stack_review_state(db_path)
     theme_map = stack_theme_map(db_path)
     themes = {item["id"]: item for item in list_themes(db_path)}
 
@@ -1066,6 +1522,20 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
         if picked_reference is None and len(stack.references) == 1:
             picked_reference = stack.references[0].id
 
+        review = review_map.get(stack.id)
+        review_previous_pick = None
+        review_new_ids: list[int] = []
+        if review is not None:
+            candidate_prev = review.get("previous_pick_reference_id")
+            if isinstance(candidate_prev, int) and any(ref.id == candidate_prev for ref in stack.references):
+                review_previous_pick = candidate_prev
+            review_new_ids = [
+                int(ref_id)
+                for ref_id in review.get("new_reference_ids", [])
+                if any(ref.id == int(ref_id) for ref in stack.references)
+            ]
+        needs_review = bool(review_previous_pick is not None and review_new_ids)
+
         theme_id = theme_map.get(stack.id)
         theme = themes.get(theme_id) if theme_id is not None else None
         first_date = photo_items[0]["date"] if photo_items else None
@@ -1077,7 +1547,10 @@ def list_stacks(db_path: Path) -> list[dict[str, Any]]:
                 "photo_ids": [ref.id for ref in stack.references],
                 "photos": photo_items,
                 "pick_reference_id": picked_reference,
-                "resolved": picked_reference is not None,
+                "resolved": picked_reference is not None and not needs_review,
+                "needs_review": needs_review,
+                "previous_pick_reference_id": review_previous_pick,
+                "new_reference_ids": review_new_ids,
                 "date": first_date,
                 "theme_id": theme_id,
                 "theme_title": theme["title"] if theme else None,

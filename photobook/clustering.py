@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from photobook.project_store import (
+    list_themes,
     list_references,
     list_stack_split_overrides,
     replace_themes_from_clusters,
@@ -410,7 +411,12 @@ def _cluster_partition_by_similarity(signatures: list[Signature], embeddings: di
     return [sorted(group, key=lambda item: item.reference_id) for group in groups]
 
 
-def _cluster_stacks(signatures: list[Signature], duplicate_groups: list[list[Signature]]) -> tuple[list[dict[str, Any]], bool]:
+def _cluster_stacks(
+    signatures: list[Signature],
+    duplicate_groups: list[list[Signature]],
+    *,
+    use_clip: bool = True,
+) -> tuple[list[dict[str, Any]], bool]:
     consumed = {sig.reference_id for group in duplicate_groups for sig in group}
     stacks: list[dict[str, Any]] = []
 
@@ -434,7 +440,9 @@ def _cluster_stacks(signatures: list[Signature], duplicate_groups: list[list[Sig
             stack.pop("order_key", None)
         return stacks, False
 
-    embeddings, clip_available = _compute_clip_embeddings(candidates)
+    embeddings, clip_available = ({}, False)
+    if use_clip:
+        embeddings, clip_available = _compute_clip_embeddings(candidates)
     partitions = _partition_signatures(candidates)
 
     for part_index, partition in enumerate(partitions):
@@ -742,27 +750,47 @@ def _apply_split_overrides(stacks: list[dict[str, Any]], overrides: dict[int, di
     return result
 
 
-def run_clustering_pipeline(db_path: Path) -> dict[str, Any]:
+def run_clustering_pipeline(
+    db_path: Path,
+    *,
+    mode: str = "final",
+    progress_callback: Any | None = None,
+) -> dict[str, Any]:
+    phase_mode = "final" if mode not in {"final", "provisional"} else mode
+    is_provisional = phase_mode == "provisional"
+
+    def _progress(step: str, percent: int, message: str) -> None:
+        if callable(progress_callback):
+            progress_callback(step, int(percent), message)
+
+    _progress("scan", 5 if is_provisional else 2, "Loading references")
     references = list_references(db_path)
     signatures = _compute_signatures(references)
 
     if not signatures:
+        _progress("duplicates", 30 if is_provisional else 18, "Clearing duplicate state")
         set_duplicate_groups(db_path, [])
+        _progress("stacks", 65 if is_provisional else 45, "Clearing stack state")
         set_stack_clusters(db_path, [])
-        replace_themes_from_clusters(db_path, [])
+        if not is_provisional:
+            replace_themes_from_clusters(db_path, [])
+        themes = list_themes(db_path)
+        _progress("finalize", 100, "No images to cluster")
         return {
             "references": len(references),
             "image_references": 0,
             "duplicate_groups": 0,
             "stacks": 0,
-            "themes": 0,
+            "themes": len(themes),
             "openai_enriched": False,
             "structured_outputs_used": False,
             "clip_available": False,
             "imagededup_used": False,
             "exif_partition_hours": EXIF_PARTITION_HOURS,
+            "mode": phase_mode,
         }
 
+    _progress("duplicates", 35 if is_provisional else 18, "Detecting near duplicates")
     duplicate_groups, imagededup_used = _cluster_duplicates(signatures)
     duplicate_payload: list[dict[str, Any]] = []
     for idx, group in enumerate(duplicate_groups, start=1):
@@ -780,20 +808,30 @@ def run_clustering_pipeline(db_path: Path) -> dict[str, Any]:
         )
     set_duplicate_groups(db_path, duplicate_payload)
 
-    stacks, clip_available = _cluster_stacks(signatures, duplicate_groups)
+    _progress("stacks", 70 if is_provisional else 45, "Building stack clusters")
+    stacks, clip_available = _cluster_stacks(signatures, duplicate_groups, use_clip=not is_provisional)
     overrides = list_stack_split_overrides(db_path)
     stacks = _apply_split_overrides(stacks, overrides)
     set_stack_clusters(db_path, stacks)
 
     local_theme_clusters = _local_theme_clusters(signatures, stacks)
-    theme_assignments, structured_outputs_used = _openai_theme_map(signatures, stacks)
+    theme_assignments: dict[int, str] = {}
+    structured_outputs_used = False
+    if not is_provisional:
+        _progress("themes", 80, "Assigning theme clusters")
+        theme_assignments, structured_outputs_used = _openai_theme_map(signatures, stacks)
 
     if theme_assignments:
         theme_clusters = _themes_from_photo_assignments(stacks, theme_assignments)
     else:
         theme_clusters = local_theme_clusters
 
-    themes = replace_themes_from_clusters(db_path, theme_clusters)
+    if is_provisional:
+        themes = list_themes(db_path)
+    else:
+        themes = replace_themes_from_clusters(db_path, theme_clusters)
+
+    _progress("finalize", 100, "Clustering complete")
 
     return {
         "references": len(references),
@@ -806,4 +844,5 @@ def run_clustering_pipeline(db_path: Path) -> dict[str, Any]:
         "clip_available": clip_available,
         "imagededup_used": imagededup_used,
         "exif_partition_hours": EXIF_PARTITION_HOURS,
+        "mode": phase_mode,
     }

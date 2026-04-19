@@ -45,6 +45,7 @@ body{
 .lens{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--border-radius-md);border:none;background:none;cursor:pointer;font-size:13px;color:var(--color-text-secondary);font-family:var(--font-sans);transition:all .12s;white-space:nowrap}
 .lens:hover{background:var(--color-background-secondary);color:var(--color-text-primary)}
 .lens.active{background:var(--color-background-secondary);color:var(--color-text-primary);font-weight:500}
+.lens.locked{opacity:.55}
 .lens-dot{width:6px;height:6px;border-radius:50%;background:var(--color-border-secondary);flex-shrink:0}
 .lens.active .lens-dot{background:#7F77DD}
 .lens-badge{font-size:10px;color:var(--color-text-tertiary);background:var(--color-background-secondary);padding:1px 6px;border-radius:8px;border:0.5px solid var(--color-border-tertiary)}

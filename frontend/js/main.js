@@ -54,7 +54,7 @@ let pgCtr=0;
 let curLayout='2x2';
 let dragSid=null,dragFrom=null;
 let uploadProgressPercent=0;
-let stopUploadPolling=null;
+let clusterState={state:'final',operation_id:null};
 const chapterByTheme={};
 const chapterEnsurePromises={};
 const PROJECT_ID = (() => {
@@ -68,8 +68,12 @@ configureProject(PROJECT_ID);
 
 function getP(pid){return PHOTOS.find(x=>x.id===pid)}
 function getS(sid){return STACKS.find(x=>x.id===sid)}
-function getPick(sid){const s=getS(sid);if(!s)return null;const pid=s.pick||s.photos[0];return getP(pid)}
-function resolved(s){return s.pick!==null}
+function getPick(sid){
+  const s=getS(sid);if(!s)return null;
+  const pid=s.pick||s.previousPick||s.photos[0];
+  return getP(pid);
+}
+function resolved(s){return s.pick!==null && !s.needsReview}
 function resolvedCount(){return STACKS.filter(resolved).length}
 function themeOf(sid){return themes.find(t=>t.stacks.includes(sid))}
 
@@ -116,6 +120,9 @@ function applyStacksFromApi(items){
       label:item.label||`Stack ${item.id}`,
       photos,
       pick:item.pick_reference_id != null ? String(item.pick_reference_id) : null,
+      previousPick:item.previous_pick_reference_id != null ? String(item.previous_pick_reference_id) : null,
+      needsReview:Boolean(item.needs_review),
+      newIds:(item.new_reference_ids||[]).map((rid)=>String(rid)),
       date:item.date||new Date().toISOString().slice(0,10),
     };
   });
@@ -142,9 +149,11 @@ async function syncModelFromApi(){
   const [stackRes,themeRes]=await Promise.all([api.getStacks(),api.getThemes()]);
   if(stackRes.ok && Array.isArray(stackRes.data?.items)){
     applyStacksFromApi(stackRes.data.items);
+    clusterState=stackRes.data?.cluster_state||{state:'final',operation_id:null};
   }else{
     PHOTOS=[];
     STACKS=[];
+    clusterState={state:'final',operation_id:null};
   }
 
   if(themeRes.ok && Array.isArray(themeRes.data?.items)){
@@ -153,6 +162,29 @@ async function syncModelFromApi(){
     themes=[{id:'local-default',title:'Highlights',stacks:[],color:THEME_COLORS[0]}];
     unassigned=STACKS.map((stack)=>String(stack.id));
   }
+  updateLensLocks();
+  if(!isClusterFinal() && (activeLens==='themes' || activeLens==='book')){
+    activeLens='stacks';
+    document.querySelectorAll('.lens').forEach(b=>b.classList.toggle('active',b.dataset.lens===activeLens));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+    document.getElementById('panel-stacks').classList.add('active');
+  }
+}
+
+function isClusterFinal(){
+  return (clusterState?.state||'final')==='final';
+}
+
+function updateLensLocks(){
+  const blocked=!isClusterFinal();
+  const msg='Refining stacks... Themes and Book unlock when finished';
+  document.querySelectorAll('.lens').forEach((btn)=>{
+    const lens=btn.dataset.lens;
+    if(lens==='themes' || lens==='book'){
+      btn.classList.toggle('locked',blocked);
+      btn.title=blocked?msg:'';
+    }
+  });
 }
 
 function applyBackendPages(tid,pageItems){
@@ -214,6 +246,10 @@ function updateBadges(){
 }
 
 function goLens(l){
+  if((l==='themes' || l==='book') && !isClusterFinal()){
+    showToast('Refining stacks... Themes and Book are temporarily locked');
+    return;
+  }
   activeLens=l;
   document.querySelectorAll('.lens').forEach(b=>b.classList.toggle('active',b.dataset.lens===l));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
@@ -241,8 +277,8 @@ function renderStacks(){
     card.onclick=()=>openStack(s.id);
     let fanHTML='';
     const count=s.photos.length;
-    if(res&&s.pick){
-      const p=getP(s.pick);
+    if((s.pick||s.previousPick) && pick){
+      const p=pick;
       fanHTML=`<div style="position:absolute;inset:10px;border-radius:6px;${photoStyle(p)}display:flex;align-items:flex-end;padding:6px"><span style="font-size:9px;color:rgba(0,0,0,.4)">${escAttr(p?p.label:'')}</span></div>`;
     }else if(count===1){
       const p=getP(s.photos[0]);
@@ -254,8 +290,9 @@ function renderStacks(){
         fanHTML+=`<div class="fan-img" style="top:${t}px;left:${l}px;width:${w}px;height:${h}px;z-index:${i+1};${photoStyle(p,'#ccc')}"></div>`;
       });
     }
+    const badgeText=s.needsReview?`review needed (+${(s.newIds||[]).length})`:(res?'✓ resolved':'pick needed');
     card.innerHTML=`<div class="stack-photo-area">${fanHTML}
-      <div class="stack-badge ${res?'badge-resolved':'badge-pending'}">${res?'✓ resolved':'pick needed'}</div>
+      <div class="stack-badge ${res?'badge-resolved':'badge-pending'}">${badgeText}</div>
     </div>
     <div class="stack-info">
       <div class="stack-name">${s.label}</div>
@@ -270,7 +307,7 @@ function renderStacks(){
 
 function openStack(sid){
   const s=getS(sid);if(!s)return;
-  openStackId=sid;tempPick=s.pick;
+  openStackId=sid;tempPick=s.pick||s.previousPick;
   splitMode=false;
   splitSelection=new Set();
   document.getElementById('sm-title').textContent=s.label;
@@ -278,7 +315,7 @@ function openStack(sid){
   s.photos.forEach(pid=>{
     const p=getP(pid);if(!p)return;
     const d=document.createElement('div');
-    d.className='photo-opt'+(s.pick===pid?' sel':'');
+    d.className='photo-opt'+((tempPick===pid)?' sel':'');
     d.dataset.pid=pid;d.onclick=()=>selPick(pid);
     d.innerHTML=`<div class="photo-opt-img" style="${photoStyle(p)}display:flex;align-items:flex-end;padding:5px"><span style="font-size:9px;color:rgba(0,0,0,.38)">${escAttr(p.label)}</span></div>
       <div class="photo-opt-lbl">${escAttr(p.label)}</div>
@@ -320,7 +357,14 @@ function updateSMFoot(){
   }
 
   const p=tempPick?getP(tempPick):null;
-  document.getElementById('sm-sel-label').textContent=p?`Selected: ${p.label}`:'None selected';
+  if(openStack?.needsReview){
+    const added=(openStack.newIds||[]).length;
+    document.getElementById('sm-sel-label').textContent=p
+      ?`Review stack (+${added} new): ${p.label}`
+      :`Review required (+${added} new photos)`;
+  }else{
+    document.getElementById('sm-sel-label').textContent=p?`Selected: ${p.label}`:'None selected';
+  }
   if(confirmBtn)confirmBtn.disabled=!tempPick;
   if(splitBtn)splitBtn.disabled=true;
   if(splitToggle)splitToggle.textContent='Split mode';
@@ -346,7 +390,7 @@ function toggleSplitMode(){
     tempPick=null;
   }else{
     const s=getS(openStackId);
-    tempPick=s?s.pick:null;
+    tempPick=s?(s.pick||s.previousPick):null;
   }
   document.querySelectorAll('.photo-opt').forEach((el)=>{
     const pid=el.dataset.pid;
@@ -381,7 +425,11 @@ async function splitSelected(){
 }
 function closeModal(){document.getElementById('stack-modal').style.display='none';openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
 
-function buildDuelStacks(){return STACKS.filter(s=>!resolved(s)&&s.photos.length>1);}
+function buildDuelStacks(){
+  return STACKS
+    .filter(s=>!resolved(s)&&s.photos.length>1)
+    .sort((a,b)=>Number(Boolean(b.needsReview))-Number(Boolean(a.needsReview)));
+}
 
 function renderDuel(){
   duelStacks=buildDuelStacks();
@@ -397,6 +445,11 @@ function renderDuel(){
   const votes=duelState[s.id]||{};
 
   let pairA=s.photos[0],pairB=s.photos[1];
+  if(s.needsReview && s.previousPick && s.photos.includes(s.previousPick)){
+    pairA=s.previousPick;
+    const candidate=(s.newIds||[]).find((pid)=>s.photos.includes(pid) && pid!==pairA);
+    pairB=candidate||s.photos.find((pid)=>pid!==pairA)||pairB;
+  }
   const pA=getP(pairA),pB=getP(pairB);
   const votesA=Object.values(votes).filter(v=>v===pairA).length;
   const votesB=Object.values(votes).filter(v=>v===pairB).length;
@@ -429,7 +482,7 @@ function renderDuel(){
     <button class="duel-skip" onclick="skipDuel()">Skip for now</button>
   </div>
   <div class="duel-stack-name">${s.label}</div>
-  <div class="duel-hint">Tap the photo you'd pick for this stack</div>
+  <div class="duel-hint">${s.needsReview?'New photos joined this stack. Confirm or replace the previous winner.':'Tap the photo you\'d pick for this stack'}</div>
   <div class="duel-arena">
     ${cardHTML(pairA,pA,pickedA,pickedB,votesA,collabAvatars)}
     <div class="duel-vs"><div class="vs-circle">vs</div></div>
@@ -752,23 +805,29 @@ function copyLink(){
 }
 
 function uploadStageTitle(phase){
-  if(phase==='ingesting')return 'Indexing files';
-  if(phase==='clustering')return 'Analyzing photos';
+  if(phase==='uploading')return 'Uploading folder';
+  if(phase==='indexing')return 'Indexing files';
+  if(phase==='provisional_clustering')return 'Publishing provisional stacks';
+  if(phase==='refining')return 'Refining stacks and themes';
   if(phase==='completed')return 'Upload complete';
   if(phase==='failed')return 'Upload failed';
-  return 'Uploading folder';
+  return 'Working';
 }
 
 function uploadStageDetail(progress){
-  if(progress?.phase==='ingesting'){
+  if(progress?.phase==='indexing'){
     const done=Number(progress.files_done||0);
     const total=Number(progress.files_total||0);
     if(total>0){
       return `Indexed ${done}/${total} files`;
     }
   }
-  if(progress?.phase==='clustering'){
-    return 'Running duplicate, stack, and theme clustering';
+  if(progress?.phase==='provisional_clustering'){
+    const visible=Number(progress.stacks_visible||0);
+    return visible>0?`Stacks visible: ${visible}`:'Computing first stack pass';
+  }
+  if(progress?.phase==='refining'){
+    return 'Applying duplicate, stack, and theme refinement';
   }
   if(progress?.phase==='failed'){
     return progress.error||'Upload failed';
@@ -799,57 +858,14 @@ function hideUploadOverlay(){
   overlay.classList.remove('failed');
 }
 
-function startUploadProgressPolling(){
-  let cancelled=false;
-
-  const tick=async()=>{
-    if(cancelled)return;
-    const result=await api.getUploadProgress();
-    if(cancelled)return;
-    if(result.ok && result.data){
-      const progress=result.data;
-      const pct=Number(progress.percent);
-      if(Number.isFinite(pct)){
-        uploadProgressPercent=Math.max(uploadProgressPercent,pct);
-      }
-      showUploadOverlay(
-        uploadStageTitle(progress.phase),
-        uploadStageDetail(progress),
-        uploadProgressPercent,
-        {failed:progress.phase==='failed'},
-      );
-    }
-    if(!cancelled){
-      setTimeout(tick,350);
-    }
-  };
-
-  void tick();
-  return ()=>{
-    cancelled=true;
-  };
-}
-
-function summarizeUpload(result){
-  const stored=result?.stored??0;
-  const images=result?.supported_images??0;
-  const ignored=result?.ignored??0;
-  return `Uploaded ${stored} file${stored===1?'':'s'} (${images} image${images===1?'':'s'}, ${ignored} ignored)`;
-}
-
-async function applyUploadResult(result){
-  if(!result.ok){
-    showToast('Upload failed');
-    return;
-  }
-
+async function refreshUiFromBackend(){
   await syncModelFromApi();
   renderStacks();
   if(activeLens==='themes')renderThemes();
+  if(activeLens==='duel')renderDuel();
   if(activeLens==='timeline')renderTimeline();
   if(activeLens==='book')renderBook();
   updateBadges();
-  showToast(summarizeUpload(result.data?.upload||{}));
 }
 
 async function* walkDirectory(handle,prefix=''){
@@ -869,37 +885,113 @@ async function* walkDirectory(handle,prefix=''){
 async function performUpload(entries){
   uploadProgressPercent=1;
   showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
-  stopUploadPolling=startUploadProgressPolling();
-  try{
-    const result=await api.uploadFiles(entries,{
-      onUploadProgress:(progress)=>{
-        const pct=Math.max(1,Math.min(65,Math.round((progress?.progress||0)*65)));
-        if(pct>uploadProgressPercent){
-          uploadProgressPercent=pct;
-          showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
-        }
+  const result=await api.uploadFiles(entries,{
+    onUploadProgress:(progress)=>{
+      const pct=Math.max(1,Math.min(35,Math.round((progress?.progress||0)*35)));
+      if(pct>uploadProgressPercent){
+        uploadProgressPercent=pct;
+        showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
+      }
+    },
+  });
+  if(!result.ok){
+    showUploadOverlay('Upload failed','Could not upload folder',100,{failed:true});
+    await new Promise((resolve)=>setTimeout(resolve,900));
+    hideUploadOverlay();
+    showToast('Upload failed');
+    return;
+  }
+
+  if(result.status===409){
+    hideUploadOverlay();
+    showToast(result.data?.detail||'Another upload is already running');
+    return;
+  }
+
+  const operationId=result.data?.operation_id;
+  if(!operationId){
+    hideUploadOverlay();
+    showToast('Upload started without operation id');
+    return;
+  }
+
+  const completion = await new Promise((resolve)=>{
+    let done=false;
+    let syncInFlight=false;
+    let lastSyncAt=0;
+    const trySync=()=>{
+      if(syncInFlight)return;
+      const now=Date.now();
+      if(now-lastSyncAt<1200)return;
+      lastSyncAt=now;
+      syncInFlight=true;
+      void syncModelFromApi()
+        .then(()=>{
+          if(activeLens==='stacks')renderStacks();
+          if(activeLens==='duel')renderDuel();
+          updateBadges();
+        })
+        .finally(()=>{syncInFlight=false;});
+    };
+    const onProgress=(payload)=>{
+      const phase=payload?.phase||'working';
+      const percent=Number(payload?.percent);
+      if(Number.isFinite(percent)){
+        uploadProgressPercent=Math.max(uploadProgressPercent,Math.min(100,Math.max(0,percent)));
+      }
+      showUploadOverlay(
+        uploadStageTitle(phase),
+        uploadStageDetail(payload),
+        uploadProgressPercent,
+        {failed:phase==='failed'},
+      );
+      if(phase==='indexing' || phase==='provisional_clustering' || phase==='refining'){
+        trySync();
+      }
+    };
+
+    const stopStream=api.streamOperationEvents(operationId,{
+      onEvent:onProgress,
+      onDone:(payload)=>{
+        onProgress(payload);
+        if(done)return;
+        done=true;
+        clearInterval(pollTimer);
+        stopStream();
+        resolve(payload||{status:'failed',phase:'failed',message:'Operation stream ended'});
+      },
+      onError:()=>{
+        // Poll fallback handles transient SSE disconnects.
       },
     });
 
-    if(result.ok){
-      uploadProgressPercent=Math.max(uploadProgressPercent,96);
-      showUploadOverlay('Finalizing','Refreshing project state',uploadProgressPercent);
-      await applyUploadResult(result);
-      showUploadOverlay('Upload complete',summarizeUpload(result.data?.upload||{}),100);
-      await new Promise((resolve)=>setTimeout(resolve,700));
-      return;
-    }
+    const pollTimer=setInterval(async()=>{
+      if(done)return;
+      const snapshot=await api.getOperation(operationId);
+      if(!snapshot.ok || !snapshot.data?.operation)return;
+      const operation=snapshot.data.operation;
+      onProgress(operation);
+      if(operation.status==='completed' || operation.status==='failed'){
+        done=true;
+        clearInterval(pollTimer);
+        stopStream();
+        resolve(operation);
+      }
+    },1000);
+  });
 
-    showUploadOverlay('Upload failed','Could not upload folder',100,{failed:true});
-    await applyUploadResult(result);
-    await new Promise((resolve)=>setTimeout(resolve,1200));
-  }finally{
-    if(stopUploadPolling){
-      stopUploadPolling();
-      stopUploadPolling=null;
-    }
+  await refreshUiFromBackend();
+  if(completion?.status==='completed'){
+    showUploadOverlay('Upload complete',completion?.message||'Upload complete',100);
+    await new Promise((resolve)=>setTimeout(resolve,700));
     hideUploadOverlay();
+    showToast(completion?.message||'Upload complete');
+    return;
   }
+  showUploadOverlay('Upload failed',completion?.error||completion?.message||'Upload failed',100,{failed:true});
+  await new Promise((resolve)=>setTimeout(resolve,1200));
+  hideUploadOverlay();
+  showToast('Upload failed');
 }
 
 async function doUpload(){
