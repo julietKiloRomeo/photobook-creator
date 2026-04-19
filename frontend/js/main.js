@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api, configureProject } from './api.js';
 
 const THEME_COLORS=['#7F77DD','#1D9E75','#D85A30','#378ADD','#BA7517','#D4537E'];
 
@@ -53,12 +53,21 @@ let curLayout='2x2';
 let dragSid=null,dragFrom=null;
 const chapterByTheme={};
 const chapterEnsurePromises={};
+const PROJECT_ID = (() => {
+  const match = window.location.pathname.match(/^\/darkroom\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+})();
 const lensApiTouched={
   stacks:false,
   themes:false,
   timeline:false,
   chapters:false,
 };
+
+if(!PROJECT_ID){
+  window.location.assign('/');
+}
+configureProject(PROJECT_ID);
 
 function getP(pid){return PHOTOS.find(x=>x.id===pid)}
 function getS(sid){return STACKS.find(x=>x.id===sid)}
@@ -71,6 +80,72 @@ function touchLensApi(key,fn){
   if(lensApiTouched[key])return;
   lensApiTouched[key]=true;
   void fn();
+}
+
+function normalizePhoto(photo){
+  const pid = String(photo.id);
+  return {
+    id:pid,
+    label:photo.label||`Photo ${pid}`,
+    color:photo.color||THEME_COLORS[Number(pid)%THEME_COLORS.length],
+    date:photo.date||new Date().toISOString().slice(0,10),
+  };
+}
+
+function applyStacksFromApi(items){
+  const nextPhotos=[];
+  const seen=new Set();
+  const nextStacks=(items||[]).map((item)=>{
+    const photos=(item.photos||[]).map((photo)=>{
+      const normalized=normalizePhoto(photo);
+      if(!seen.has(normalized.id)){
+        seen.add(normalized.id);
+        nextPhotos.push(normalized);
+      }
+      return normalized.id;
+    });
+    return {
+      id:String(item.id),
+      label:item.label||`Stack ${item.id}`,
+      photos,
+      pick:item.pick_reference_id?String(item.pick_reference_id):null,
+      date:item.date||new Date().toISOString().slice(0,10),
+    };
+  });
+  PHOTOS=nextPhotos;
+  STACKS=nextStacks;
+}
+
+function applyThemesFromApi(items){
+  themes=(items||[]).map((theme)=>({
+    id:String(theme.id),
+    title:theme.title||'Theme',
+    color:theme.color||THEME_COLORS[0],
+    stacks:(theme.stack_ids||[]).map((sid)=>String(sid)),
+  }));
+  const assigned = new Set(themes.flatMap((theme)=>theme.stacks));
+  unassigned=STACKS.map((stack)=>String(stack.id)).filter((sid)=>!assigned.has(sid));
+  if(!themes.length){
+    themes=[{id:'local-default',title:'Highlights',stacks:[],color:THEME_COLORS[0]}];
+    unassigned=STACKS.map((stack)=>String(stack.id));
+  }
+}
+
+async function syncModelFromApi(){
+  const [stackRes,themeRes]=await Promise.all([api.getStacks(),api.getThemes()]);
+  if(stackRes.ok && Array.isArray(stackRes.data?.items)){
+    applyStacksFromApi(stackRes.data.items);
+  }else{
+    PHOTOS=[];
+    STACKS=[];
+  }
+
+  if(themeRes.ok && Array.isArray(themeRes.data?.items)){
+    applyThemesFromApi(themeRes.data.items);
+  }else{
+    themes=[{id:'local-default',title:'Highlights',stacks:[],color:THEME_COLORS[0]}];
+    unassigned=STACKS.map((stack)=>String(stack.id));
+  }
 }
 
 function applyBackendPages(tid,pageItems){
@@ -145,8 +220,11 @@ function goLens(l){
 }
 
 function renderStacks(){
-  touchLensApi('stacks',()=>api.getStacks());
   const g=document.getElementById('stacks-grid');g.innerHTML='';
+  if(!STACKS.length){
+    g.innerHTML='<div class=\"section-meta\">No stacks yet. Upload files to begin.</div>';
+    return;
+  }
   STACKS.forEach(s=>{
     const res=resolved(s);
     const pick=getPick(s.id);
@@ -215,7 +293,7 @@ function confirmPick(){
   const s=getS(openStackId);
   if(s&&tempPick){s.pick=tempPick;}
   if(openStackId&&tempPick){
-    void api.pickDuel({stack_id:openStackId,pick_id:tempPick,source:'stacks-modal'});
+    void api.pickDuel({stack_id:openStackId,reference_id:Number(tempPick)});
   }
   closeModal();
   if(activeLens==='stacks')renderStacks();
@@ -287,14 +365,13 @@ function pickDuel(sid,pid){
   s.pick=pid;
   if(!duelState[sid])duelState[sid]={};
   duelState[sid]['you']=pid;
-  void api.pickDuel({stack_id:sid,pick_id:pid,source:'duel'});
+  void api.pickDuel({stack_id:sid,reference_id:Number(pid)});
   updateBadges();
   setTimeout(()=>{duelIdx++;if(duelIdx>=duelStacks.length)duelIdx=0;renderDuel();},420);
 }
 function skipDuel(){duelIdx=(duelIdx+1)%Math.max(duelStacks.length,1);renderDuel();}
 
 function renderThemes(){
-  touchLensApi('themes',()=>api.getThemes());
   const canvas=document.getElementById('themes-canvas');canvas.innerHTML='';
   const pool=document.getElementById('pool-chips');pool.innerHTML='';
   themes.forEach(t=>{
@@ -340,33 +417,37 @@ function ddr(e,toTid){
   else{const t=themes.find(x=>x.id===dragFrom);if(t)t.stacks=t.stacks.filter(x=>x!==dragSid);}
   if(toTid==='pool')unassigned.push(dragSid);
   else{const t=themes.find(x=>x.id===toTid);if(t)t.stacks.push(dragSid);}
+  void api.assignTheme({stack_id:String(dragSid),theme_id:toTid==='pool'?null:Number(toTid)});
   dragSid=null;dragFrom=null;
   renderThemes();updateBadges();
 }
 function chipRemove(sid,from){
   if(from==='pool')return;
   const t=themes.find(x=>x.id===from);if(t)t.stacks=t.stacks.filter(x=>x!==sid);
+  void api.assignTheme({stack_id:String(sid),theme_id:null});
   unassigned.push(sid);renderThemes();
 }
-function renameTheme(tid,val){const t=themes.find(x=>x.id===tid);if(t)t.title=val;renderBookNav();}
-function delTheme(tid){const t=themes.find(x=>x.id===tid);if(t)unassigned.push(...t.stacks);themes=themes.filter(x=>x.id!==tid);renderThemes();renderBookNav();}
-function addTheme(){
-  const id='t'+(++tidCtr);
-  const color=THEME_COLORS[tidCtr%THEME_COLORS.length];
-  const newTheme={id,title:'New theme',stacks:[],color};
-  themes.push(newTheme);
-  void api.addTheme({
-    id:newTheme.id,
-    title:newTheme.title,
-    color:newTheme.color,
-    stack_ids:newTheme.stacks,
-  });
+function renameTheme(tid,val){
+  const t=themes.find(x=>x.id===tid);if(t)t.title=val;
+  void api.patchTheme(Number(tid),{title:val});
+  renderBookNav();
+}
+function delTheme(tid){
+  const t=themes.find(x=>x.id===tid);if(t)unassigned.push(...t.stacks);
+  themes=themes.filter(x=>x.id!==tid);
+  void api.deleteTheme(Number(tid));
+  renderThemes();renderBookNav();
+}
+async function addTheme(){
+  const next='New theme';
+  const created=await api.addTheme({title:next});
+  if(created.ok){
+    await syncModelFromApi();
+  }
   renderThemes();updateBadges();
-  setTimeout(()=>{const inp=document.querySelector(`#tc-${id}`)?.closest('.theme-block')?.querySelector('.theme-title-inp');if(inp){inp.select();inp.focus();}},50);
 }
 
 function renderTimeline(){
-  touchLensApi('timeline',()=>api.getTimeline());
   const wrap=document.getElementById('timeline-wrap');wrap.innerHTML='';
   const byMonth={};
   STACKS.forEach(s=>{
@@ -399,7 +480,6 @@ function renderTimeline(){
 }
 
 function renderBook(){
-  touchLensApi('chapters',()=>api.getChapters());
   renderBookNav();
   if(!activeThemeId&&themes.length>0){
     setActiveTheme(themes[0].id);
@@ -578,7 +658,55 @@ function copyLink(){
   showToast('Link copied to clipboard');
 }
 
-function doUpload(){showToast('✓ 3 new photos added — 1 stack updated');}
+function summarizeUpload(result){
+  const stored=result?.stored??0;
+  const images=result?.supported_images??0;
+  const ignored=result?.ignored??0;
+  return `Uploaded ${stored} file${stored===1?'':'s'} (${images} image${images===1?'':'s'}, ${ignored} ignored)`;
+}
+
+function doUpload(){
+  const input=document.getElementById('upload-input');
+  if(input)input.click();
+}
+
+async function handleUploadChange(event){
+  const files=Array.from(event.target.files||[]);
+  if(!files.length)return;
+  const result=await api.uploadFiles(files);
+  if(!result.ok){
+    showToast('Upload failed');
+    event.target.value='';
+    return;
+  }
+
+  await syncModelFromApi();
+  renderStacks();
+  if(activeLens==='themes')renderThemes();
+  if(activeLens==='timeline')renderTimeline();
+  if(activeLens==='book')renderBook();
+  updateBadges();
+  showToast(summarizeUpload(result.data?.upload||{}));
+  event.target.value='';
+}
+
+async function doReset(){
+  const yes=window.confirm('Reset this project? This deletes uploads and generated state.');
+  if(!yes)return;
+  const reset=await api.resetProject();
+  if(!reset.ok){
+    showToast('Reset failed');
+    return;
+  }
+
+  pages={};
+  slots={};
+  activePage=null;
+  activeThemeId=null;
+  await syncModelFromApi();
+  goLens('stacks');
+  showToast('Project reset');
+}
 
 function showToast(msg){
   let t=document.getElementById('_toast');
@@ -587,8 +715,13 @@ function showToast(msg){
   clearTimeout(t._timer);t._timer=setTimeout(()=>{t.style.opacity='0';},2800);
 }
 
-function bootstrap(){
-  void api.getReferences();
+async function bootstrap(){
+  const uploadInput=document.getElementById('upload-input');
+  if(uploadInput){
+    uploadInput.addEventListener('change',handleUploadChange);
+  }
+  await api.getReferences();
+  await syncModelFromApi();
   renderStacks();
   updateBadges();
 }
@@ -605,6 +738,7 @@ Object.assign(window,{
   dlv,
   dov,
   doUpload,
+  doReset,
   goLens,
   openShare,
   openStack,
@@ -617,4 +751,4 @@ Object.assign(window,{
   skipDuel,
 });
 
-bootstrap();
+void bootstrap();

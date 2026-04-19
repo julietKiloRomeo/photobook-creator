@@ -1,5 +1,6 @@
 .trufflehog/
 .photobook-temp/
+.photobook-data/
 photobook-output/
 .cache/
 __pycache__/

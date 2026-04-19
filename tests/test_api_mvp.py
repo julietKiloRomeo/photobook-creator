@@ -18,7 +18,11 @@ def test_health_and_darkroom_shell(tmp_path, monkeypatch) -> None:
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
 
-    shell = client.get("/")
+    frontpage = client.get("/")
+    assert frontpage.status_code == 200
+    assert "projects" in frontpage.text.lower()
+
+    shell = client.get("/darkroom/external")
     assert shell.status_code == 200
     assert "darkroom" in shell.text.lower()
 
@@ -137,4 +141,3 @@ def test_chapter_page_item_and_export_flow(tmp_path, monkeypatch) -> None:
     assert data["chapters"][0]["name"] == "Summer"
     assert len(data["chapters"][0]["pages"]) == 2
     assert len(data["chapters"][0]["pages"][0]["items"]) == 2
-

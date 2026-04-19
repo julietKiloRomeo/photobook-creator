@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import * as path from 'path';
 
 test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', async ({ page, request }) => {
   const apiRequests: string[] = [];
@@ -11,7 +12,36 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
   });
 
   await page.goto('/');
+  await expect(page.locator('h1')).toContainText('Photo Book Projects');
+
+  const existingProjects = await page.locator('#projects-list .project-item').count();
+  if (existingProjects > 0) {
+    await page.locator('#projects-list .open-btn').first().click();
+  } else {
+    await page.locator('#project-name').fill('Gate Test Book');
+    await page.locator('#create-project-btn').click();
+    await page.locator('#projects-list .open-btn').first().click();
+  }
+
+  await expect(page).toHaveURL(/\/darkroom\//);
   await expect(page.locator('.brand')).toContainText('darkroom');
+
+  await test.step('Upload fixture photos for real clustering', async () => {
+    const fixtureDir = path.join(process.cwd(), 'tests', 'fixtures', 'vacation-20');
+    const files = [
+      'vacation_01.jpg',
+      'vacation_02.jpg',
+      'vacation_03.jpg',
+      'vacation_04.jpg',
+      'vacation_05.jpg',
+      'vacation_06.jpg',
+      'vacation_07.jpg',
+      'vacation_08.jpg',
+    ].map((name) => path.join(fixtureDir, name));
+
+    await page.setInputFiles('#upload-input', files);
+    await expect.poll(async () => page.locator('#stacks-grid .stack-card').count()).toBeGreaterThan(0);
+  });
 
   await test.step('Stacks: resolve one stack', async () => {
     await page.locator('.lens[data-lens="stacks"]').click();
@@ -27,7 +57,12 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
   await test.step('Duel: make one duel decision', async () => {
     await page.locator('.lens[data-lens="duel"]').click();
     await expect(page.locator('#panel-duel')).toHaveClass(/active/);
-    await page.locator('#duel-wrap .duel-card').first().click();
+    const duelCards = page.locator('#duel-wrap .duel-card');
+    if ((await duelCards.count()) > 0) {
+      await duelCards.first().click();
+    } else {
+      await expect(page.locator('#duel-wrap .duel-done')).toBeVisible();
+    }
   });
 
   await test.step('Themes: create one extra theme', async () => {
@@ -55,7 +90,7 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
   });
 
   await test.step('Strict backend wiring assertions (expected to fail until full integration)', async () => {
-    const requiredCalls = ['/api/intake/references', '/api/chapters', '/api/pages/'];
+    const requiredCalls = ['/intake/references', '/chapters', '/pages/'];
 
     for (const endpoint of requiredCalls) {
       const found = apiRequests.some((call) => call.includes(endpoint));
@@ -65,7 +100,8 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
       ).toBeTruthy();
     }
 
-    const exportResponse = await request.post('/api/export', {
+    const projectId = page.url().split('/darkroom/')[1];
+    const exportResponse = await request.post(`/api/projects/${projectId}/export`, {
       data: {},
     });
 

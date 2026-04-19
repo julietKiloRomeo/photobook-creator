@@ -73,6 +73,37 @@ CREATE TABLE IF NOT EXISTS theme_stacks (
     UNIQUE(stack_id),
     FOREIGN KEY(theme_id) REFERENCES themes(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    content_type TEXT,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    derived_path TEXT,
+    is_supported_image INTEGER NOT NULL DEFAULT 0,
+    ignored_reason TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS duplicate_groups (
+    group_id TEXT NOT NULL,
+    reference_id INTEGER NOT NULL,
+    distance INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(group_id, reference_id),
+    FOREIGN KEY(reference_id) REFERENCES intake_references(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS stack_clusters (
+    stack_id TEXT NOT NULL,
+    reference_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(stack_id, reference_id),
+    FOREIGN KEY(reference_id) REFERENCES intake_references(id) ON DELETE CASCADE
+);
 """
 
 
@@ -165,6 +196,202 @@ def list_references(db_path: Path) -> list[dict[str, Any]]:
         item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
         items.append(item)
     return items
+
+
+def create_upload(
+    db_path: Path,
+    *,
+    filename: str,
+    content_type: str | None,
+    size_bytes: int,
+    sha256: str,
+    original_path: str,
+    derived_path: str | None,
+    is_supported_image: bool,
+    ignored_reason: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    payload = metadata or {}
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO uploads (
+              filename, content_type, size_bytes, sha256, original_path, derived_path,
+              is_supported_image, ignored_reason, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                filename,
+                content_type,
+                size_bytes,
+                sha256,
+                original_path,
+                derived_path,
+                1 if is_supported_image else 0,
+                ignored_reason,
+                json.dumps(payload, separators=(",", ":")),
+            ),
+        )
+    return int(cursor.lastrowid)
+
+
+def list_uploads(db_path: Path) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT
+              id,
+              filename,
+              content_type,
+              size_bytes,
+              sha256,
+              original_path,
+              derived_path,
+              is_supported_image,
+              ignored_reason,
+              metadata_json,
+              created_at
+            FROM uploads
+            ORDER BY id
+            """
+        ).fetchall()
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["is_supported_image"] = bool(item["is_supported_image"])
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        output.append(item)
+    return output
+
+
+def clear_uploads(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM uploads")
+
+
+def clear_duplicate_groups(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM duplicate_groups")
+
+
+def set_duplicate_groups(
+    db_path: Path,
+    groups: list[dict[str, Any]],
+) -> None:
+    clear_duplicate_groups(db_path)
+    rows: list[tuple[str, int, int]] = []
+    for group in groups:
+        group_id = str(group["group_id"])
+        for member in group.get("members", []):
+            rows.append(
+                (
+                    group_id,
+                    int(member["reference_id"]),
+                    int(member.get("distance", 0)),
+                )
+            )
+
+    if not rows:
+        return
+    with _connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO duplicate_groups (group_id, reference_id, distance) VALUES (?, ?, ?)",
+            rows,
+        )
+
+
+def list_duplicate_groups(db_path: Path) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT group_id, reference_id, distance
+            FROM duplicate_groups
+            ORDER BY group_id, distance, reference_id
+            """
+        ).fetchall()
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        grouped.setdefault(str(item["group_id"]), []).append(
+            {
+                "reference_id": int(item["reference_id"]),
+                "distance": int(item["distance"]),
+            }
+        )
+    return [{"group_id": group_id, "members": members} for group_id, members in grouped.items()]
+
+
+def clear_stack_clusters(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM stack_clusters")
+
+
+def set_stack_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> None:
+    clear_stack_clusters(db_path)
+    rows: list[tuple[str, int, str, int]] = []
+    for index, cluster in enumerate(clusters):
+        stack_id = str(cluster["stack_id"])
+        label = str(cluster.get("label") or f"Stack {index + 1}")
+        for reference_id in cluster.get("reference_ids", []):
+            rows.append((stack_id, int(reference_id), label, index + 1))
+    if not rows:
+        return
+
+    with _connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO stack_clusters (stack_id, reference_id, label, order_index)
+            VALUES (?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
+def list_stack_clusters(db_path: Path) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT stack_id, reference_id, label, order_index
+            FROM stack_clusters
+            ORDER BY order_index, stack_id, reference_id
+            """
+        ).fetchall()
+
+    clusters: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        stack_id = str(item["stack_id"])
+        entry = clusters.setdefault(
+            stack_id,
+            {
+                "stack_id": stack_id,
+                "label": str(item["label"]),
+                "order_index": int(item["order_index"]),
+                "reference_ids": [],
+            },
+        )
+        entry["reference_ids"].append(int(item["reference_id"]))
+
+    ordered = sorted(clusters.values(), key=lambda cluster: (cluster["order_index"], cluster["stack_id"]))
+    for cluster in ordered:
+        cluster["reference_ids"] = sorted(cluster["reference_ids"])
+    return ordered
+
+
+def clear_processing_state(db_path: Path) -> None:
+    clear_duplicate_groups(db_path)
+    clear_stack_clusters(db_path)
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM stack_picks")
+        conn.execute("DELETE FROM theme_stacks")
+        conn.execute("DELETE FROM themes")
+        conn.execute("DELETE FROM page_items")
+        conn.execute("DELETE FROM pages")
+        conn.execute("DELETE FROM chapters")
 
 
 def seed_demo_references_if_empty(db_path: Path, root_dir: Path) -> bool:
@@ -573,6 +800,11 @@ def theme_exists(db_path: Path, theme_id: int) -> bool:
     return row is not None
 
 
+def delete_theme(db_path: Path, theme_id: int) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM themes WHERE id = ?", (theme_id,))
+
+
 def update_theme(db_path: Path, theme_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     updates = []
     values: list[Any] = []
@@ -612,6 +844,27 @@ def assign_stack_theme(db_path: Path, stack_id: str, theme_id: int | None) -> No
             )
 
 
+def replace_themes_from_clusters(db_path: Path, clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM theme_stacks")
+        conn.execute("DELETE FROM themes")
+
+    created_theme_ids: list[int] = []
+    for index, cluster in enumerate(clusters):
+        title = str(cluster.get("title") or f"Theme {index + 1}")
+        color = cluster.get("color")
+        theme = create_theme(db_path, title, color if isinstance(color, str) else None)
+        theme_id = int(theme["id"])
+        created_theme_ids.append(theme_id)
+        for stack_id in cluster.get("stack_ids", []):
+            assign_stack_theme(db_path, str(stack_id), theme_id)
+
+    if not created_theme_ids:
+        # Keep at least one editable theme in UI.
+        create_theme(db_path, "Highlights", DEFAULT_THEME_COLORS[0])
+    return list_themes(db_path)
+
+
 def stack_theme_map(db_path: Path) -> dict[str, int]:
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT stack_id, theme_id FROM theme_stacks").fetchall()
@@ -619,7 +872,32 @@ def stack_theme_map(db_path: Path) -> dict[str, int]:
 
 
 def list_stacks(db_path: Path) -> list[dict[str, Any]]:
-    stacks = derive_stacks(db_path)
+    configured_clusters = list_stack_clusters(db_path)
+    if configured_clusters:
+        references_by_id = {
+            int(item["id"]): _to_stack_reference(item)
+            for item in list_references(db_path)
+        }
+        stacks: list[StackModel] = []
+        for cluster in configured_clusters:
+            refs = [
+                references_by_id[reference_id]
+                for reference_id in cluster["reference_ids"]
+                if reference_id in references_by_id
+            ]
+            if not refs:
+                continue
+            stacks.append(
+                StackModel(
+                    id=str(cluster["stack_id"]),
+                    key=str(cluster["stack_id"]),
+                    label=str(cluster["label"]),
+                    references=sorted(refs, key=lambda ref: ref.id),
+                )
+            )
+    else:
+        stacks = derive_stacks(db_path)
+
     picks = _stack_pick_map(db_path)
     theme_map = stack_theme_map(db_path)
     themes = {item["id"]: item for item in list_themes(db_path)}

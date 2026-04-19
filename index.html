@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photo Book Projects</title>
+    <link rel="stylesheet" href="/frontend/styles/projects.css" />
+  </head>
+  <body>
+    <main class="projects-app" aria-labelledby="projects-page-title">
+      <header class="projects-header">
+        <p class="brand">darkroom</p>
+        <h1 id="projects-page-title">Photo Book Projects</h1>
+        <p class="subtitle">Create a project and jump back into editing.</p>
+      </header>
+
+      <section class="panel" aria-labelledby="create-project-title">
+        <div class="panel-head">
+          <h2 id="create-project-title">Create project</h2>
+        </div>
+        <form id="create-project-form" class="create-form">
+          <label for="project-name" class="sr-only">Project name</label>
+          <input
+            id="project-name"
+            name="name"
+            type="text"
+            autocomplete="off"
+            placeholder="Weekend in Rome"
+            required
+            maxlength="120"
+          />
+          <button id="create-project-btn" type="submit">Create</button>
+        </form>
+        <p id="create-project-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="projects-list-title">
+        <div class="panel-head">
+          <h2 id="projects-list-title">Projects</h2>
+          <button id="refresh-projects-btn" type="button" class="ghost-btn">Refresh</button>
+        </div>
+        <p id="projects-load-status" class="status" role="status" aria-live="polite"></p>
+        <ul id="projects-list" class="projects-list" aria-label="Projects"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/frontend/js/projects.js"></script>
+  </body>
+</html>
