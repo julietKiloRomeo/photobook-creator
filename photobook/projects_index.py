@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import errno
 import re
 import sqlite3
 from pathlib import Path
 import secrets
 import shutil
+import time
 
 
 DEFAULT_DATA_DIR = ".photobook-data"
@@ -130,9 +132,33 @@ def ensure_default_project() -> dict[str, str]:
     return create_project("My First Book")
 
 
+def _safe_rmtree(path: Path, *, retries: int = 5) -> None:
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            # Some environments can race with active readers/writers and briefly report
+            # ENOTEMPTY while reset is in progress; retry to avoid failing the request.
+            if exc.errno == errno.ENOTEMPTY and attempt < retries:
+                time.sleep(0.05 * attempt)
+                continue
+            # Reset should be best-effort and must not raise for this cleanup path.
+            return
+
+
 def reset_project_storage(project_id: str) -> None:
     root = get_project_root(project_id)
     if root.exists():
-        shutil.rmtree(root)
+        archived = get_projects_root() / f".reset-{project_id}-{secrets.token_hex(4)}"
+        try:
+            root.rename(archived)
+            _safe_rmtree(archived)
+        except OSError:
+            _safe_rmtree(root)
+
+    root.mkdir(parents=True, exist_ok=True)
     get_project_originals_dir(project_id).mkdir(parents=True, exist_ok=True)
     get_project_derived_dir(project_id).mkdir(parents=True, exist_ok=True)

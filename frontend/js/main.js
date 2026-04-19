@@ -41,6 +41,8 @@ let tidCtr=3;
 let activeLens='stacks';
 let openStackId=null;
 let tempPick=null;
+let splitMode=false;
+let splitSelection=new Set();
 let duelIdx=0;
 let duelStacks=[];
 let duelState={};
@@ -267,6 +269,8 @@ function renderStacks(){
 function openStack(sid){
   const s=getS(sid);if(!s)return;
   openStackId=sid;tempPick=s.pick;
+  splitMode=false;
+  splitSelection=new Set();
   document.getElementById('sm-title').textContent=s.label;
   const g=document.getElementById('sm-grid');g.innerHTML='';
   s.photos.forEach(pid=>{
@@ -280,19 +284,47 @@ function openStack(sid){
     g.appendChild(d);
   });
   updateSMFoot();
+  const splitToggle=document.getElementById('sm-split-mode');
+  if(splitToggle)splitToggle.textContent='Split mode';
   document.getElementById('stack-modal').style.display='flex';
 }
 function selPick(pid){
+  if(splitMode){
+    if(splitSelection.has(pid))splitSelection.delete(pid);
+    else splitSelection.add(pid);
+    document.querySelectorAll('.photo-opt').forEach((el)=>{
+      el.classList.toggle('sel',splitSelection.has(el.dataset.pid));
+    });
+    updateSMFoot();
+    return;
+  }
   tempPick=pid;
   document.querySelectorAll('.photo-opt').forEach(e=>e.classList.toggle('sel',e.dataset.pid===pid));
   updateSMFoot();
 }
 function updateSMFoot(){
+  const splitBtn=document.getElementById('sm-split');
+  const splitToggle=document.getElementById('sm-split-mode');
+  const confirmBtn=document.getElementById('sm-confirm');
+  const openStack=getS(openStackId);
+  if(splitMode){
+    const count=splitSelection.size;
+    const total=openStack?openStack.photos.length:0;
+    document.getElementById('sm-sel-label').textContent=`${count} selected for split`;
+    if(confirmBtn)confirmBtn.disabled=true;
+    if(splitBtn)splitBtn.disabled=!(count>0 && count<total);
+    if(splitToggle)splitToggle.textContent='Exit split mode';
+    return;
+  }
+
   const p=tempPick?getP(tempPick):null;
   document.getElementById('sm-sel-label').textContent=p?`Selected: ${p.label}`:'None selected';
-  document.getElementById('sm-confirm').disabled=!tempPick;
+  if(confirmBtn)confirmBtn.disabled=!tempPick;
+  if(splitBtn)splitBtn.disabled=true;
+  if(splitToggle)splitToggle.textContent='Split mode';
 }
 function confirmPick(){
+  if(splitMode)return;
   const s=getS(openStackId);
   if(s&&tempPick){s.pick=tempPick;}
   if(openStackId&&tempPick){
@@ -304,7 +336,48 @@ function confirmPick(){
   updateBadges();
   duelStacks=buildDuelStacks();
 }
-function closeModal(){document.getElementById('stack-modal').style.display='none';openStackId=null;tempPick=null;}
+function toggleSplitMode(){
+  if(!openStackId)return;
+  splitMode=!splitMode;
+  splitSelection=new Set();
+  if(splitMode){
+    tempPick=null;
+  }else{
+    const s=getS(openStackId);
+    tempPick=s?s.pick:null;
+  }
+  document.querySelectorAll('.photo-opt').forEach((el)=>{
+    const pid=el.dataset.pid;
+    el.classList.toggle('sel',splitMode?splitSelection.has(pid):pid===tempPick);
+  });
+  updateSMFoot();
+}
+async function splitSelected(){
+  const s=getS(openStackId);
+  if(!s || !splitMode)return;
+  const selectedIds=Array.from(splitSelection).map((pid)=>Number(pid)).filter((pid)=>Number.isFinite(pid));
+  if(!selectedIds.length || selectedIds.length>=s.photos.length)return;
+
+  const result=await api.splitStack(openStackId,{
+    reference_ids:selectedIds,
+    label:'Split stack',
+  });
+  if(!result.ok){
+    showToast('Split failed');
+    return;
+  }
+
+  await syncModelFromApi();
+  closeModal();
+  if(activeLens==='stacks')renderStacks();
+  if(activeLens==='themes')renderThemes();
+  if(activeLens==='timeline')renderTimeline();
+  if(activeLens==='book')renderBook();
+  updateBadges();
+  duelStacks=buildDuelStacks();
+  showToast('Stack split');
+}
+function closeModal(){document.getElementById('stack-modal').style.display='none';openStackId=null;tempPick=null;splitMode=false;splitSelection=new Set();}
 
 function buildDuelStacks(){return STACKS.filter(s=>!resolved(s)&&s.photos.length>1);}
 
@@ -795,6 +868,8 @@ Object.assign(window,{
   setActiveTheme,
   setLay,
   skipDuel,
+  splitSelected,
+  toggleSplitMode,
 });
 
 void bootstrap();

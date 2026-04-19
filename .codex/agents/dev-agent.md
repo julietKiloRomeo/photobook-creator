@@ -12,3 +12,4 @@ Guardrails:
 - Do not delete worktrees before integration completes.
 - Do not expand scope beyond delegated issue intent; report gaps back to PM.
 - Keep branch naming and worktree paths aligned with AGENTS policy.
+- For LLM features returning structured data, use strict Structured Outputs + typed schema validation (Pydantic), and implement explicit refusal/parse-failure fallbacks.

@@ -27,6 +27,12 @@ The workflow remains:
 uv sync --extra dev
 ```
 
+For full-quality clustering (imagededup + OpenCLIP), install ML extras:
+
+```bash
+uv sync --extra dev --extra ml
+```
+
 Generate the vacation fixture pack (20 AI images + manifest) via OpenAI image generation using llm-gateway credentials from `~/.codex/config.toml` (`model_providers.topsoe`):
 
 ```bash
@@ -58,9 +64,11 @@ uv run photobook-api --host 127.0.0.1 --port 8000
 - `GET /api/projects/{project_id}`
 - `POST /api/projects/{project_id}/uploads`
 - `GET /api/projects/{project_id}/uploads`
+- `GET /api/projects/{project_id}/references/{reference_id}/image`
 - `POST /api/projects/{project_id}/process`
 - `GET /api/projects/{project_id}/duplicates`
 - `POST /api/projects/{project_id}/reset`
+- `POST /api/projects/{project_id}/stacks/{stack_id}/split`
 - `GET /api/intake/references`
 - `POST /api/intake/references`
 - `GET /api/stacks`

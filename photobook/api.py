@@ -37,6 +37,7 @@ from photobook.project_store import (
     pick_stack_reference,
     reference_exists,
     reorder_chapters,
+    split_stack_cluster,
     sync_pages_for_chapter,
     theme_exists,
     update_chapter_name,
@@ -137,6 +138,11 @@ class ThemePatchRequest(BaseModel):
 class ThemeAssignRequest(BaseModel):
     stack_id: str
     theme_id: int | None = None
+
+
+class StackSplitRequest(BaseModel):
+    reference_ids: list[int] = Field(min_length=1)
+    label: str | None = None
 
 
 def _root_dir() -> Path:
@@ -382,6 +388,24 @@ def create_app() -> FastAPI:
         ctx = _ctx(project_id)
         return JSONResponse({"items": list_stacks(ctx["db_path"])})
 
+    @app.post("/api/projects/{project_id}/stacks/{stack_id}/split")
+    def post_project_stack_split(project_id: str, stack_id: str, payload: StackSplitRequest) -> JSONResponse:
+        ctx = _ctx(project_id)
+        try:
+            result = split_stack_cluster(
+                ctx["db_path"],
+                stack_id,
+                payload.reference_ids,
+                label=payload.label,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            if reason == "stack_not_found":
+                raise HTTPException(status_code=404, detail="Stack not found") from exc
+            raise HTTPException(status_code=400, detail=reason) from exc
+
+        return JSONResponse({"status": "ok", "result": result, "items": list_stacks(ctx["db_path"])})
+
     @app.post("/api/projects/{project_id}/duel/pick")
     def post_project_duel_pick(project_id: str, payload: DuelPickRequest) -> JSONResponse:
         ctx = _ctx(project_id)
@@ -552,6 +576,23 @@ def create_app() -> FastAPI:
     def get_stacks() -> JSONResponse:
         ctx = _ctx(None)
         return JSONResponse({"items": list_stacks(ctx["db_path"])})
+
+    @app.post("/api/stacks/{stack_id}/split")
+    def post_stack_split(stack_id: str, payload: StackSplitRequest) -> JSONResponse:
+        ctx = _ctx(None)
+        try:
+            result = split_stack_cluster(
+                ctx["db_path"],
+                stack_id,
+                payload.reference_ids,
+                label=payload.label,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            if reason == "stack_not_found":
+                raise HTTPException(status_code=404, detail="Stack not found") from exc
+            raise HTTPException(status_code=400, detail=reason) from exc
+        return JSONResponse({"status": "ok", "result": result, "items": list_stacks(ctx["db_path"])})
 
     @app.post("/api/duel/pick")
     def post_duel_pick(payload: DuelPickRequest) -> JSONResponse:

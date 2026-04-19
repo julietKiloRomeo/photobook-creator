@@ -18,6 +18,11 @@ dev = [
   "pytest>=7.4.0",
   "ruff>=0.12.5",
 ]
+ml = [
+  "imagededup>=0.3.3",
+  "open-clip-torch>=2.24.0",
+  "torch>=2.2.0",
+]
 
 [project.scripts]
 photobook-api = "photobook.cli:main"

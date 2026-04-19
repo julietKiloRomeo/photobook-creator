@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from io import BytesIO
+import errno
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from photobook.api import create_app
+from photobook import projects_index
 
 
 def _client(tmp_path, monkeypatch) -> TestClient:
@@ -189,3 +192,96 @@ def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None
     assert image_response.status_code == 200
     assert image_response.headers["content-type"].startswith("image/")
     assert len(image_response.content) > 0
+
+
+def test_stack_split_endpoint(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+
+    project = client.post("/api/projects", json={"name": "Split Test"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    image_a = Image.new("RGB", (40, 30), color=(10, 20, 30))
+    image_b = Image.new("RGB", (40, 30), color=(10, 20, 30))
+    image_c = Image.new("RGB", (40, 30), color=(200, 120, 40))
+
+    path_a = tmp_path / "a.jpg"
+    path_b = tmp_path / "b.jpg"
+    path_c = tmp_path / "c.jpg"
+    image_a.save(path_a)
+    image_b.save(path_b)
+    image_c.save(path_c)
+
+    seed = client.post(
+        f"/api/projects/{project_id}/intake/references",
+        json={
+            "items": [
+                {"source": str(path_a), "source_type": "path", "label": "A", "metadata": {}},
+                {"source": str(path_b), "source_type": "path", "label": "B", "metadata": {}},
+                {"source": str(path_c), "source_type": "path", "label": "C", "metadata": {}},
+            ]
+        },
+    )
+    assert seed.status_code == 200
+
+    process = client.post(f"/api/projects/{project_id}/process", json={})
+    assert process.status_code == 200
+
+    stacks_res = client.get(f"/api/projects/{project_id}/stacks")
+    assert stacks_res.status_code == 200
+    stacks = stacks_res.json()["items"]
+    target = next((item for item in stacks if len(item["photo_ids"]) > 1), None)
+    assert target is not None
+
+    moved_reference_id = int(target["photo_ids"][0])
+    split = client.post(
+        f"/api/projects/{project_id}/stacks/{target['id']}/split",
+        json={"reference_ids": [moved_reference_id], "label": "Manual split"},
+    )
+    assert split.status_code == 200
+    payload = split.json()
+    assert payload["status"] == "ok"
+    assert payload["result"]["old_stack_id"] == target["id"]
+    assert payload["result"]["moved_reference_ids"] == [moved_reference_id]
+    assert payload["result"]["new_stack_id"].startswith("s-")
+    new_stack_id = payload["result"]["new_stack_id"]
+
+    process_after_split = client.post(f"/api/projects/{project_id}/process", json={})
+    assert process_after_split.status_code == 200
+    after_reprocess = client.get(f"/api/projects/{project_id}/stacks")
+    assert after_reprocess.status_code == 200
+    persisted_stack = next((item for item in after_reprocess.json()["items"] if item["id"] == new_stack_id), None)
+    assert persisted_stack is not None
+    assert moved_reference_id in persisted_stack["photo_ids"]
+
+    split_again = client.post(
+        f"/api/projects/{project_id}/stacks/{target['id']}/split",
+        json={"reference_ids": target["photo_ids"]},
+    )
+    assert split_again.status_code == 400
+
+
+def test_reset_project_storage_tolerates_enotempty(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = projects_index.create_project("Reset Retry")
+    project_id = project["id"]
+    root = projects_index.get_project_root(project_id)
+    (root / "originals").mkdir(parents=True, exist_ok=True)
+    (root / "originals" / "x.txt").write_text("x", encoding="utf-8")
+
+    real_rmtree = projects_index.shutil.rmtree
+    state = {"calls": 0}
+
+    def flaky_rmtree(path: Path) -> None:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise OSError(errno.ENOTEMPTY, "Directory not empty")
+        real_rmtree(path)
+
+    monkeypatch.setattr(projects_index.shutil, "rmtree", flaky_rmtree)
+
+    projects_index.reset_project_storage(project_id)
+
+    assert projects_index.get_project_root(project_id).exists()
+    assert projects_index.get_project_originals_dir(project_id).exists()
+    assert projects_index.get_project_derived_dir(project_id).exists()

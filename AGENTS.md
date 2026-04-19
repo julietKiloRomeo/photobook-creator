@@ -66,6 +66,13 @@ Each agent only pulls GitHub issues labeled for its role and assigned to it.
 - `.agents/skills/using-git-worktrees`
 - `.agents/skills/dispatching-parallel-agents`
 
+## LLM Structured Output Policy
+
+- For any production LLM integration that returns machine-readable data, use strict Structured Outputs with an explicit schema.
+- Prefer typed schema models (Pydantic) and validate responses before applying side effects.
+- Always handle refusal / schema-parse failure explicitly with a safe fallback path.
+- Do not rely on free-form JSON parsing for core clustering or workflow decisions.
+
 ## Python Environment Policy
 
 Use `uv` for all Python dependency and environment management.

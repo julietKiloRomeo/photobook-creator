@@ -60,6 +60,13 @@ export const api = {
     return request('/stacks');
   },
 
+  splitStack(stackId, payload) {
+    return request(`/stacks/${encodeURIComponent(stackId)}/split`, {
+      method: 'POST',
+      body: payload,
+    });
+  },
+
   pickDuel(payload) {
     return request('/duel/pick', {
       method: 'POST',

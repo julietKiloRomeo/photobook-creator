@@ -14,14 +14,9 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
   await page.goto('/');
   await expect(page.locator('h1')).toContainText('Photo Book Projects');
 
-  const existingProjects = await page.locator('#projects-list .project-item').count();
-  if (existingProjects > 0) {
-    await page.locator('#projects-list .open-btn').first().click();
-  } else {
-    await page.locator('#project-name').fill('Gate Test Book');
-    await page.locator('#create-project-btn').click();
-    await page.locator('#projects-list .open-btn').first().click();
-  }
+  await page.locator('#project-name').fill(`Gate Test Book ${Date.now()}`);
+  await page.locator('#create-project-btn').click();
+  await page.locator('#projects-list .open-btn').first().click();
 
   await expect(page).toHaveURL(/\/darkroom\//);
   await expect(page.locator('.brand')).toContainText('darkroom');

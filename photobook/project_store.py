@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -102,6 +103,14 @@ CREATE TABLE IF NOT EXISTS stack_clusters (
     label TEXT NOT NULL,
     order_index INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(stack_id, reference_id),
+    FOREIGN KEY(reference_id) REFERENCES intake_references(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS stack_split_overrides (
+    reference_id INTEGER PRIMARY KEY,
+    stack_id TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(reference_id) REFERENCES intake_references(id) ON DELETE CASCADE
 );
 """
@@ -400,6 +409,119 @@ def list_stack_clusters(db_path: Path) -> list[dict[str, Any]]:
     for cluster in ordered:
         cluster["reference_ids"] = sorted(cluster["reference_ids"])
     return ordered
+
+
+def list_stack_split_overrides(db_path: Path) -> dict[int, dict[str, str]]:
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT reference_id, stack_id, label
+            FROM stack_split_overrides
+            ORDER BY reference_id
+            """
+        ).fetchall()
+
+    overrides: dict[int, dict[str, str]] = {}
+    for row in rows:
+        item = dict(row)
+        overrides[int(item["reference_id"])] = {
+            "stack_id": str(item["stack_id"]),
+            "label": str(item["label"] or ""),
+        }
+    return overrides
+
+
+def _make_stack_id(reference_ids: list[int], *, salt: str = "") -> str:
+    digest = hashlib.sha1(
+        f"{','.join(str(ref_id) for ref_id in sorted(reference_ids))}|{salt}".encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()
+    return f"s-{digest[:12]}"
+
+
+def split_stack_cluster(
+    db_path: Path,
+    stack_id: str,
+    reference_ids: list[int],
+    *,
+    label: str | None = None,
+) -> dict[str, Any]:
+    clusters = list_stack_clusters(db_path)
+    target = next((cluster for cluster in clusters if cluster["stack_id"] == stack_id), None)
+    if target is None:
+        raise ValueError("stack_not_found")
+
+    existing_refs = [int(item) for item in target["reference_ids"]]
+    selected = sorted({int(item) for item in reference_ids if int(item) in existing_refs})
+    if not selected:
+        raise ValueError("no_valid_reference_ids")
+    if len(selected) >= len(existing_refs):
+        raise ValueError("cannot_split_all_references")
+
+    next_label = (label or "Custom split").strip() or "Custom split"
+    new_stack_id = _make_stack_id(selected)
+    used_ids = {str(cluster["stack_id"]) for cluster in clusters}
+    salt_counter = 1
+    while new_stack_id in used_ids:
+        new_stack_id = _make_stack_id(selected, salt=f"manual-{salt_counter}")
+        salt_counter += 1
+
+    remainder = [ref_id for ref_id in existing_refs if ref_id not in selected]
+    new_order = int(target.get("order_index", 0) or 0) + 1
+
+    with _connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM stack_clusters WHERE stack_id = ? AND reference_id IN ({})".format(
+                ",".join("?" for _ in selected)
+            ),
+            [stack_id, *selected],
+        )
+
+        conn.executemany(
+            """
+            INSERT INTO stack_clusters (stack_id, reference_id, label, order_index)
+            VALUES (?, ?, ?, ?)
+            """,
+            [(new_stack_id, ref_id, next_label, new_order) for ref_id in selected],
+        )
+
+        conn.executemany(
+            """
+            INSERT INTO stack_split_overrides (reference_id, stack_id, label)
+            VALUES (?, ?, ?)
+            ON CONFLICT(reference_id) DO UPDATE SET
+              stack_id = excluded.stack_id,
+              label = excluded.label,
+              created_at = datetime('now')
+            """,
+            [(ref_id, new_stack_id, next_label) for ref_id in selected],
+        )
+
+        picked_row = conn.execute(
+            "SELECT reference_id FROM stack_picks WHERE stack_id = ?",
+            (stack_id,),
+        ).fetchone()
+        if picked_row is not None and int(picked_row[0]) not in remainder:
+            conn.execute("DELETE FROM stack_picks WHERE stack_id = ?", (stack_id,))
+
+        theme_row = conn.execute(
+            "SELECT theme_id FROM theme_stacks WHERE stack_id = ?",
+            (stack_id,),
+        ).fetchone()
+        if theme_row is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO theme_stacks (theme_id, stack_id) VALUES (?, ?)",
+                (int(theme_row[0]), new_stack_id),
+            )
+
+    return {
+        "old_stack_id": stack_id,
+        "new_stack_id": new_stack_id,
+        "moved_reference_ids": selected,
+        "remaining_reference_ids": remainder,
+        "label": next_label,
+    }
 
 
 def clear_processing_state(db_path: Path) -> None:
