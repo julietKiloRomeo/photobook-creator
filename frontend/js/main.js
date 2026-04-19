@@ -53,6 +53,8 @@ let slots={};
 let pgCtr=0;
 let curLayout='2x2';
 let dragSid=null,dragFrom=null;
+let uploadProgressPercent=0;
+let stopUploadPolling=null;
 const chapterByTheme={};
 const chapterEnsurePromises={};
 const PROJECT_ID = (() => {
@@ -749,6 +751,85 @@ function copyLink(){
   showToast('Link copied to clipboard');
 }
 
+function uploadStageTitle(phase){
+  if(phase==='ingesting')return 'Indexing files';
+  if(phase==='clustering')return 'Analyzing photos';
+  if(phase==='completed')return 'Upload complete';
+  if(phase==='failed')return 'Upload failed';
+  return 'Uploading folder';
+}
+
+function uploadStageDetail(progress){
+  if(progress?.phase==='ingesting'){
+    const done=Number(progress.files_done||0);
+    const total=Number(progress.files_total||0);
+    if(total>0){
+      return `Indexed ${done}/${total} files`;
+    }
+  }
+  if(progress?.phase==='clustering'){
+    return 'Running duplicate, stack, and theme clustering';
+  }
+  if(progress?.phase==='failed'){
+    return progress.error||'Upload failed';
+  }
+  return progress?.message||'Working...';
+}
+
+function showUploadOverlay(title,detail,percent,{failed=false}={}){
+  const overlay=document.getElementById('upload-progress-overlay');
+  if(!overlay)return;
+  const pct=Math.max(0,Math.min(100,Math.round(percent)));
+  overlay.style.display='flex';
+  overlay.classList.toggle('failed',failed);
+  const titleEl=document.getElementById('upload-progress-title');
+  const pctEl=document.getElementById('upload-progress-percent');
+  const fillEl=document.getElementById('upload-progress-fill');
+  const detailEl=document.getElementById('upload-progress-detail');
+  if(titleEl)titleEl.textContent=title;
+  if(pctEl)pctEl.textContent=`${pct}%`;
+  if(fillEl)fillEl.style.width=`${pct}%`;
+  if(detailEl)detailEl.textContent=detail;
+}
+
+function hideUploadOverlay(){
+  const overlay=document.getElementById('upload-progress-overlay');
+  if(!overlay)return;
+  overlay.style.display='none';
+  overlay.classList.remove('failed');
+}
+
+function startUploadProgressPolling(){
+  let cancelled=false;
+
+  const tick=async()=>{
+    if(cancelled)return;
+    const result=await api.getUploadProgress();
+    if(cancelled)return;
+    if(result.ok && result.data){
+      const progress=result.data;
+      const pct=Number(progress.percent);
+      if(Number.isFinite(pct)){
+        uploadProgressPercent=Math.max(uploadProgressPercent,pct);
+      }
+      showUploadOverlay(
+        uploadStageTitle(progress.phase),
+        uploadStageDetail(progress),
+        uploadProgressPercent,
+        {failed:progress.phase==='failed'},
+      );
+    }
+    if(!cancelled){
+      setTimeout(tick,350);
+    }
+  };
+
+  void tick();
+  return ()=>{
+    cancelled=true;
+  };
+}
+
 function summarizeUpload(result){
   const stored=result?.stored??0;
   const images=result?.supported_images??0;
@@ -785,6 +866,42 @@ async function* walkDirectory(handle,prefix=''){
   }
 }
 
+async function performUpload(entries){
+  uploadProgressPercent=1;
+  showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
+  stopUploadPolling=startUploadProgressPolling();
+  try{
+    const result=await api.uploadFiles(entries,{
+      onUploadProgress:(progress)=>{
+        const pct=Math.max(1,Math.min(65,Math.round((progress?.progress||0)*65)));
+        if(pct>uploadProgressPercent){
+          uploadProgressPercent=pct;
+          showUploadOverlay('Uploading folder','Sending files to server',uploadProgressPercent);
+        }
+      },
+    });
+
+    if(result.ok){
+      uploadProgressPercent=Math.max(uploadProgressPercent,96);
+      showUploadOverlay('Finalizing','Refreshing project state',uploadProgressPercent);
+      await applyUploadResult(result);
+      showUploadOverlay('Upload complete',summarizeUpload(result.data?.upload||{}),100);
+      await new Promise((resolve)=>setTimeout(resolve,700));
+      return;
+    }
+
+    showUploadOverlay('Upload failed','Could not upload folder',100,{failed:true});
+    await applyUploadResult(result);
+    await new Promise((resolve)=>setTimeout(resolve,1200));
+  }finally{
+    if(stopUploadPolling){
+      stopUploadPolling();
+      stopUploadPolling=null;
+    }
+    hideUploadOverlay();
+  }
+}
+
 async function doUpload(){
   if(typeof window.showDirectoryPicker==='function'){
     try{
@@ -797,8 +914,7 @@ async function doUpload(){
         showToast('No files found in selected folder');
         return;
       }
-      const result=await api.uploadFiles(entries);
-      await applyUploadResult(result);
+      await performUpload(entries);
       return;
     }catch(error){
       if(error && error.name==='AbortError')return;
@@ -819,9 +935,11 @@ async function handleUploadChange(event){
     file,
     relativePath:file.webkitRelativePath||file.name,
   }));
-  const result=await api.uploadFiles(entries);
-  await applyUploadResult(result);
-  event.target.value='';
+  try{
+    await performUpload(entries);
+  }finally{
+    event.target.value='';
+  }
 }
 
 async function doReset(){

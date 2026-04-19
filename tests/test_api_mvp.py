@@ -189,6 +189,9 @@ def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None
     project = client.post("/api/projects", json={"name": "Upload Test"})
     assert project.status_code == 201
     project_id = project.json()["id"]
+    initial_progress = client.get(f"/api/projects/{project_id}/uploads/progress")
+    assert initial_progress.status_code == 200
+    assert initial_progress.json()["phase"] == "idle"
 
     image = Image.new("RGB", (32, 24), color=(30, 90, 160))
     buf = BytesIO()
@@ -206,6 +209,12 @@ def test_project_upload_and_reference_image_route(tmp_path, monkeypatch) -> None
     upload_info = upload.json()["upload"]
     assert upload_info["stored"] == 1
     assert upload_info["supported_images"] == 1
+    upload_progress = client.get(f"/api/projects/{project_id}/uploads/progress")
+    assert upload_progress.status_code == 200
+    progress_payload = upload_progress.json()
+    assert progress_payload["phase"] == "completed"
+    assert progress_payload["percent"] == 100
+    assert progress_payload["active"] is False
 
     uploads = client.get(f"/api/projects/{project_id}/uploads")
     assert uploads.status_code == 200

@@ -138,7 +138,8 @@ export const api = {
     });
   },
 
-  async uploadFiles(entries) {
+  uploadFiles(entries, options = {}) {
+    const { onUploadProgress } = options;
     const form = new FormData();
     (entries || []).forEach((entry) => {
       const file = entry?.file || entry;
@@ -156,21 +157,56 @@ export const api = {
       form.append('relative_paths', relativePath);
     });
 
-    const response = await fetch(apiPath('/uploads'), {
-      method: 'POST',
-      body: form,
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', apiPath('/uploads'));
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || typeof onUploadProgress !== 'function') {
+          return;
+        }
+        onUploadProgress({
+          loaded: event.loaded,
+          total: event.total,
+          progress: event.total > 0 ? event.loaded / event.total : 0,
+        });
+      };
+
+      xhr.onerror = () => {
+        resolve({
+          ok: false,
+          status: 0,
+          data: null,
+        });
+      };
+
+      xhr.onload = () => {
+        let data = null;
+        try {
+          data = typeof xhr.response === 'object' && xhr.response !== null
+            ? xhr.response
+            : JSON.parse(xhr.responseText || 'null');
+        } catch (_error) {
+          data = null;
+        }
+
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          data,
+        });
+      };
+
+      xhr.send(form);
     });
-    const contentType = response.headers.get('content-type') || '';
-    const data = contentType.includes('application/json') ? await response.json() : null;
-    return {
-      ok: response.ok,
-      status: response.status,
-      data,
-    };
   },
 
   getUploads() {
     return request('/uploads');
+  },
+
+  getUploadProgress() {
+    return request('/uploads/progress');
   },
 
   getDuplicates() {

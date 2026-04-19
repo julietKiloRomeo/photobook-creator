@@ -24,7 +24,9 @@ test('full app gate: Stacks -> Duel -> Themes -> Timeline -> Book -> export', as
   await test.step('Upload fixture photos for real clustering', async () => {
     const fixtureDir = path.join(process.cwd(), 'tests', 'fixtures', 'vacation-20');
     await page.setInputFiles('#upload-input', fixtureDir);
+    await expect(page.locator('#upload-progress-overlay')).toBeVisible();
     await expect.poll(async () => page.locator('#stacks-grid .stack-card').count()).toBeGreaterThan(0);
+    await expect(page.locator('#upload-progress-overlay')).toBeHidden();
   });
 
   await test.step('Stacks: resolve one stack', async () => {

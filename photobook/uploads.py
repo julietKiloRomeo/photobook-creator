@@ -6,6 +6,7 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 import re
+from typing import Callable
 import uuid
 
 from fastapi import UploadFile
@@ -105,6 +106,7 @@ def process_uploads(
     derived_dir: Path,
     files: list[UploadFile],
     relative_paths: list[str] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> UploadResult:
     originals_dir.mkdir(parents=True, exist_ok=True)
     derived_dir.mkdir(parents=True, exist_ok=True)
@@ -202,6 +204,9 @@ def process_uploads(
             created_references += 1
         else:
             ignored += 1
+
+        if progress_callback is not None:
+            progress_callback(index + 1, len(files), relative_path or original_name)
 
     return UploadResult(
         stored=stored,

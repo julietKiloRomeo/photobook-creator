@@ -4,12 +4,15 @@ from datetime import datetime, timezone
 import mimetypes
 import os
 from pathlib import Path
+import threading
 from typing import Any, Literal
+import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from photobook.clustering import run_clustering_pipeline
 from photobook.project_store import (
@@ -254,6 +257,37 @@ def _reference_image_response(db_path: Path, reference_id: int) -> FileResponse:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Photo Book Creator API")
+    upload_progress_lock = threading.Lock()
+    upload_progress_by_project: dict[str, dict[str, Any]] = {}
+
+    def _default_upload_progress() -> dict[str, Any]:
+        return {
+            "active": False,
+            "operation_id": None,
+            "phase": "idle",
+            "percent": 0,
+            "message": "Idle",
+            "files_total": 0,
+            "files_done": 0,
+            "last_path": None,
+            "error": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _set_upload_progress(project_id: str, **updates: Any) -> None:
+        with upload_progress_lock:
+            current = upload_progress_by_project.get(project_id, _default_upload_progress())
+            current.update(updates)
+            current["updated_at"] = datetime.now(timezone.utc).isoformat()
+            upload_progress_by_project[project_id] = current
+
+    def _get_upload_progress(project_id: str) -> dict[str, Any]:
+        with upload_progress_lock:
+            current = upload_progress_by_project.get(project_id)
+            if current is None:
+                current = _default_upload_progress()
+                upload_progress_by_project[project_id] = current
+            return dict(current)
 
     frontend_dir = _root_dir() / "frontend"
     if frontend_dir.exists():
@@ -323,14 +357,75 @@ def create_app() -> FastAPI:
             return JSONResponse({"upload": {"stored": 0, "supported_images": 0, "ignored": 0, "created_references": 0}})
 
         ctx = _ctx(project_id)
-        result = process_uploads(
-            ctx["db_path"],
-            originals_dir=ctx["originals_dir"],
-            derived_dir=ctx["derived_dir"],
-            files=files,
-            relative_paths=relative_paths,
+        operation_id = uuid.uuid4().hex
+        _set_upload_progress(
+            project_id,
+            active=True,
+            operation_id=operation_id,
+            phase="ingesting",
+            percent=5,
+            message="Reading files",
+            files_total=len(files),
+            files_done=0,
+            last_path=None,
+            error=None,
         )
-        processing = run_clustering_pipeline(ctx["db_path"])
+
+        def _on_file_progress(done: int, total: int, relative_path: str) -> None:
+            file_pct = 5 + int((done / max(total, 1)) * 55)
+            _set_upload_progress(
+                project_id,
+                active=True,
+                operation_id=operation_id,
+                phase="ingesting",
+                percent=min(file_pct, 60),
+                message=f"Indexed {done}/{total} files",
+                files_total=total,
+                files_done=done,
+                last_path=relative_path,
+                error=None,
+            )
+
+        try:
+            result = await run_in_threadpool(
+                process_uploads,
+                ctx["db_path"],
+                ctx["originals_dir"],
+                ctx["derived_dir"],
+                files,
+                relative_paths,
+                _on_file_progress,
+            )
+            _set_upload_progress(
+                project_id,
+                active=True,
+                operation_id=operation_id,
+                phase="clustering",
+                percent=72,
+                message="Running duplicate, stack, and theme clustering",
+                error=None,
+            )
+            processing = await run_in_threadpool(run_clustering_pipeline, ctx["db_path"])
+            _set_upload_progress(
+                project_id,
+                active=False,
+                operation_id=operation_id,
+                phase="completed",
+                percent=100,
+                message="Upload complete",
+                error=None,
+            )
+        except Exception as exc:
+            _set_upload_progress(
+                project_id,
+                active=False,
+                operation_id=operation_id,
+                phase="failed",
+                message="Upload failed",
+                error=str(exc),
+            )
+            raise
+
         return JSONResponse(
             {
                 "upload": {
@@ -342,6 +437,13 @@ def create_app() -> FastAPI:
                 "processing": processing,
             }
         )
+
+    @app.get("/api/projects/{project_id}/uploads/progress")
+    def get_project_upload_progress(project_id: str) -> JSONResponse:
+        _ctx(project_id)
+        progress = _get_upload_progress(project_id)
+        progress["project_id"] = project_id
+        return JSONResponse(progress)
 
     @app.get("/api/projects/{project_id}/references/{reference_id}/image")
     def get_project_reference_image(project_id: str, reference_id: int) -> FileResponse:
@@ -366,6 +468,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Project not found")
 
         reset_project_storage(project_id)
+        _set_upload_progress(project_id, **_default_upload_progress())
         ctx = _ctx(project_id)
         return JSONResponse({"status": "ok", "project_id": project_id, "db_path": str(ctx["db_path"])})
 
