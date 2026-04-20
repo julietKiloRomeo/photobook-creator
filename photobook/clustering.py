@@ -18,7 +18,10 @@ from PIL import Image, ImageDraw, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from photobook.project_store import (
+    assign_stack_theme,
+    create_theme,
     list_themes,
+    list_stacks,
     list_references,
     list_stack_split_overrides,
     replace_themes_from_clusters,
@@ -66,6 +69,13 @@ class ThemeBatchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     assignments: list[ThemeAssignment]
+
+
+class ThemeReassignError(RuntimeError):
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
 
 
 def _parse_iso_datetime(value: str) -> datetime | None:
@@ -472,10 +482,48 @@ def _cluster_stacks(
     return stacks, clip_available
 
 
+def _load_dotenv(path: Path) -> dict[str, str]:
+    if not path.exists() or not path.is_file():
+        return {}
+    output: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            output[key] = value
+    return output
+
+
+def _resolve_env_value(key: str, dotenv: dict[str, str]) -> str | None:
+    current = os.getenv(key)
+    if isinstance(current, str) and current.strip():
+        return current.strip()
+    value = dotenv.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _load_gateway() -> dict[str, str] | None:
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    dotenv = {}
+    for path in (
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parents[1] / ".env",
+    ):
+        dotenv.update(_load_dotenv(path))
+
+    api_key = _resolve_env_value("OPENAI_API_KEY", dotenv)
+    base_url = _resolve_env_value("OPENAI_BASE_URL", dotenv)
+    model = _resolve_env_value("OPENAI_MODEL", dotenv) or "gpt-4.1-mini"
     if api_key and base_url:
         return {"api_key": api_key, "base_url": base_url.rstrip("/"), "model": model}
 
@@ -487,10 +535,28 @@ def _load_gateway() -> dict[str, str] | None:
     except Exception:
         return None
 
-    provider = ((config.get("model_providers") or {}).get("topsoe") or {})
-    key = provider.get("api_key") or provider.get("key")
+    providers = config.get("model_providers") or {}
+    provider_name = config.get("model_provider")
+    provider = {}
+    if isinstance(provider_name, str):
+        provider = providers.get(provider_name) or {}
+    if not provider:
+        provider = providers.get("topsoe") or {}
+
+    env_key = provider.get("env_key")
+    key = None
+    if isinstance(env_key, str) and env_key.strip():
+        key = _resolve_env_value(env_key.strip(), dotenv)
+    if key is None:
+        key = provider.get("api_key") or provider.get("key")
+
     url = provider.get("base_url") or provider.get("url")
-    model = provider.get("model") or "gpt-4.1-mini"
+    model = (
+        _resolve_env_value("OPENAI_MODEL", dotenv)
+        or provider.get("model")
+        or config.get("model")
+        or "gpt-4.1-mini"
+    )
     if isinstance(key, str) and isinstance(url, str):
         return {"api_key": key, "base_url": url.rstrip("/"), "model": str(model)}
     return None
@@ -543,14 +609,57 @@ def _normalize_theme_title(value: str) -> str:
     return normalized[:80] if normalized else ""
 
 
-def _openai_theme_map(signatures: list[Signature], stacks: list[dict[str, Any]]) -> tuple[dict[int, str], bool]:
-    gateway = _load_gateway()
-    if gateway is None or not signatures:
-        return {}, False
+def _theme_assignment_schema() -> dict[str, Any]:
+    # Azure/OpenAI Responses strict schemas require every property key in `required`,
+    # including nullable fields such as `theme_title`.
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "assignments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "reference_id": {"type": "integer"},
+                        "decision": {"type": "string", "enum": ["existing", "new", "unknown"]},
+                        "theme_title": {"type": ["string", "null"]},
+                    },
+                    "required": ["reference_id", "decision", "theme_title"],
+                },
+            }
+        },
+        "required": ["assignments"],
+    }
 
-    schema = ThemeBatchResult.model_json_schema()
+
+def _openai_theme_map(
+    signatures: list[Signature],
+    stacks: list[dict[str, Any]],
+    *,
+    existing_themes: list[dict[str, Any]] | None = None,
+) -> tuple[dict[int, str], bool, dict[str, Any]]:
+    gateway = _load_gateway()
+    if gateway is None:
+        return {}, False, {"reason": "no_gateway_config", "successful_batches": 0, "error_batches": 0}
+    if not signatures:
+        return {}, False, {"reason": "no_signatures", "successful_batches": 0, "error_batches": 0}
+
+    schema = _theme_assignment_schema()
     assignments: dict[int, str] = {}
-    known_themes: list[str] = []
+    known_theme_map: dict[str, str] = {}
+    known_theme_details: list[tuple[str, str]] = []
+    for theme in existing_themes or []:
+        title = _normalize_theme_title(str(theme.get("title") or ""))
+        if not title:
+            continue
+        detail = " ".join(str(theme.get("description") or "").split())[:220]
+        key = title.lower()
+        if key in known_theme_map:
+            continue
+        known_theme_map[key] = title
+        known_theme_details.append((title, detail))
 
     ordered = sorted(
         signatures,
@@ -561,6 +670,9 @@ def _openai_theme_map(signatures: list[Signature], stacks: list[dict[str, Any]])
     )
 
     batch_size = CONTACT_SHEET_COLS * CONTACT_SHEET_ROWS
+    successful_batches = 0
+    error_batches = 0
+    last_error_reason: str | None = None
     for start in range(0, len(ordered), batch_size):
         batch = ordered[start : start + batch_size]
         sheet, mapping = _contact_sheet(batch)
@@ -571,7 +683,13 @@ def _openai_theme_map(signatures: list[Signature], stacks: list[dict[str, Any]])
             f"{item['marker']} reference_id={item['reference_id']} label={item['label']}"
             for item in mapping
         )
-        known_text = ", ".join(known_themes) if known_themes else "(none yet)"
+        if known_theme_details:
+            known_text = "\n".join(
+                f"- {title}: {detail or '(no description)'}"
+                for title, detail in known_theme_details
+            )
+        else:
+            known_text = "(none yet)"
 
         prompt = (
             "Assign each photo to an existing theme, a new theme, or unknown. "
@@ -579,52 +697,71 @@ def _openai_theme_map(signatures: list[Signature], stacks: list[dict[str, Any]])
             "Decisions: existing | new | unknown.\n"
             "If decision is unknown, theme_title must be null.\n"
             "If decision is existing/new, theme_title must be a short title.\n"
-            f"Known themes: {known_text}.\n"
+            "If decision is existing, theme_title must exactly match one known theme title.\n"
+            "Known themes (title: description):\n"
+            f"{known_text}\n"
             "Photo mapping:\n"
             f"{mapping_text}"
         )
 
         payload = {
             "model": gateway["model"],
-            "messages": [
+            "input": [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": sheet}},
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": sheet},
                     ],
                 }
             ],
-            "temperature": 0,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
+            "text": {
+                "format": {
+                    "type": "json_schema",
                     "name": "theme_batch_assignments",
                     "strict": True,
                     "schema": schema,
-                },
+                }
             },
         }
 
         try:
+            base_url = str(gateway["base_url"]).rstrip("/")
+            headers = {"Content-Type": "application/json"}
+            if ".azure.com" in base_url:
+                headers["api-key"] = str(gateway["api_key"])
+            else:
+                headers["Authorization"] = f"Bearer {gateway['api_key']}"
             with httpx.Client(timeout=90.0) as client:
                 response = client.post(
-                    f"{gateway['base_url']}/chat/completions",
-                    headers={"Authorization": f"Bearer {gateway['api_key']}"},
+                    f"{base_url}/v1/responses",
+                    headers=headers,
                     json=payload,
                 )
                 response.raise_for_status()
                 data = response.json()
-
-            message = data.get("choices", [{}])[0].get("message", {})
-            if message.get("refusal"):
+            output_text = data.get("output_text")
+            if not output_text:
+                for item in data.get("output", []):
+                    if not isinstance(item, dict) or item.get("type") != "message":
+                        continue
+                    for part in item.get("content", []):
+                        if isinstance(part, dict) and part.get("type") in {"output_text", "text"}:
+                            output_text = (output_text or "") + str(part.get("text") or "")
+            if not isinstance(output_text, str) or not output_text.strip():
+                error_batches += 1
+                last_error_reason = "invalid_response_payload"
                 continue
-            content = message.get("content")
-            if not isinstance(content, str):
-                continue
 
-            parsed = ThemeBatchResult.model_validate_json(content)
-        except (httpx.HTTPError, ValidationError, ValueError, KeyError, TypeError):
+            parsed = ThemeBatchResult.model_validate_json(output_text)
+            successful_batches += 1
+        except httpx.HTTPError:
+            error_batches += 1
+            last_error_reason = "llm_http_error"
+            continue
+        except (ValidationError, ValueError, KeyError, TypeError):
+            error_batches += 1
+            last_error_reason = "schema_parse_failed"
             continue
 
         seen = {item["reference_id"] for item in mapping}
@@ -643,23 +780,48 @@ def _openai_theme_map(signatures: list[Signature], stacks: list[dict[str, Any]])
                 continue
 
             if decision == "existing":
-                if title in known_themes:
-                    assignments[item.reference_id] = title
+                known = known_theme_map.get(title.lower())
+                if known:
+                    assignments[item.reference_id] = known
                 else:
                     assignments[item.reference_id] = "unknown"
                 continue
 
             # decision == new
             assignments[item.reference_id] = title
-            if title not in known_themes:
-                known_themes.append(title)
+            key = title.lower()
+            if key not in known_theme_map:
+                known_theme_map[key] = title
+                known_theme_details.append((title, ""))
 
         # Keep discovered themes from this batch available for the next batch.
         for assigned in assignments.values():
-            if assigned != "unknown" and assigned not in known_themes:
-                known_themes.append(assigned)
+            if assigned == "unknown":
+                continue
+            key = assigned.lower()
+            if key not in known_theme_map:
+                known_theme_map[key] = assigned
+                known_theme_details.append((assigned, ""))
 
-    return assignments, True
+    if assignments:
+        return assignments, True, {
+            "reason": "ok",
+            "successful_batches": successful_batches,
+            "error_batches": error_batches,
+        }
+
+    if successful_batches > 0:
+        return {}, True, {
+            "reason": "no_confident_matches",
+            "successful_batches": successful_batches,
+            "error_batches": error_batches,
+        }
+
+    return {}, True, {
+        "reason": last_error_reason or "no_llm_output",
+        "successful_batches": successful_batches,
+        "error_batches": error_batches,
+    }
 
 
 def _local_theme_clusters(signatures: list[Signature], stacks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -695,6 +857,99 @@ def _themes_from_photo_assignments(stacks: list[dict[str, Any]], assignments: di
     clusters = [{"title": title, "stack_ids": sorted(stack_ids)} for title, stack_ids in grouped.items()]
     clusters.sort(key=lambda item: item["title"])
     return clusters
+
+
+def rerun_theme_assignment_pipeline(db_path: Path) -> dict[str, Any]:
+    existing_themes = list_themes(db_path)
+    stacks_rows = list_stacks(db_path)
+    if not stacks_rows:
+        return {
+            "stacks_total": 0,
+            "unassigned_stacks": 0,
+            "assigned_stacks": 0,
+            "created_themes": 0,
+            "structured_outputs_used": False,
+            "openai_enriched": False,
+            "reason": "no_stacks",
+        }
+    assigned_stack_ids = {str(sid) for theme in existing_themes for sid in theme.get("stack_ids", [])}
+    unassigned_stack_ids = {str(item["id"]) for item in stacks_rows if str(item["id"]) not in assigned_stack_ids}
+    if not unassigned_stack_ids:
+        return {
+            "stacks_total": len(stacks_rows),
+            "unassigned_stacks": 0,
+            "assigned_stacks": 0,
+            "created_themes": 0,
+            "structured_outputs_used": False,
+            "openai_enriched": False,
+            "reason": "no_unassigned_stacks",
+        }
+
+    stacks = [
+        {
+            "stack_id": str(item["id"]),
+            "reference_ids": [int(ref_id) for ref_id in item.get("photo_ids", [])],
+        }
+        for item in stacks_rows
+    ]
+    signatures = _compute_signatures(list_references(db_path))
+    theme_assignments, structured_outputs_used, map_meta = _openai_theme_map(
+        signatures,
+        stacks,
+        existing_themes=existing_themes,
+    )
+    map_reason = str(map_meta.get("reason") or "unknown")
+    if not theme_assignments:
+        if map_reason != "no_confident_matches":
+            raise ThemeReassignError(map_reason, f"AI theme assignment unavailable: {map_reason}")
+        return {
+            "stacks_total": len(stacks_rows),
+            "unassigned_stacks": len(unassigned_stack_ids),
+            "assigned_stacks": 0,
+            "created_themes": 0,
+            "structured_outputs_used": structured_outputs_used,
+            "openai_enriched": False,
+            "reason": map_reason,
+        }
+
+    predicted = _themes_from_photo_assignments(stacks, theme_assignments)
+
+    theme_id_by_title = {
+        _normalize_theme_title(str(theme.get("title") or "")).lower(): int(theme["id"])
+        for theme in existing_themes
+        if _normalize_theme_title(str(theme.get("title") or ""))
+    }
+    created_themes = 0
+    assigned_stacks = 0
+
+    for cluster in predicted:
+        title = _normalize_theme_title(str(cluster.get("title") or ""))
+        if not title:
+            continue
+        key = title.lower()
+        theme_id = theme_id_by_title.get(key)
+        if theme_id is None:
+            created = create_theme(db_path, title)
+            theme_id = int(created["id"])
+            theme_id_by_title[key] = theme_id
+            created_themes += 1
+        for stack_id in cluster.get("stack_ids", []):
+            sid = str(stack_id)
+            if sid not in unassigned_stack_ids:
+                continue
+            assign_stack_theme(db_path, sid, theme_id)
+            unassigned_stack_ids.discard(sid)
+            assigned_stacks += 1
+
+    return {
+        "stacks_total": len(stacks_rows),
+        "unassigned_stacks": len(unassigned_stack_ids),
+        "assigned_stacks": assigned_stacks,
+        "created_themes": created_themes,
+        "structured_outputs_used": structured_outputs_used,
+        "openai_enriched": bool(theme_assignments),
+        "reason": "ok",
+    }
 
 
 def _apply_split_overrides(stacks: list[dict[str, Any]], overrides: dict[int, dict[str, str]]) -> list[dict[str, Any]]:
@@ -819,7 +1074,11 @@ def run_clustering_pipeline(
     structured_outputs_used = False
     if not is_provisional:
         _progress("themes", 80, "Assigning theme clusters")
-        theme_assignments, structured_outputs_used = _openai_theme_map(signatures, stacks)
+        theme_assignments, structured_outputs_used, _map_meta = _openai_theme_map(
+            signatures,
+            stacks,
+            existing_themes=list_themes(db_path),
+        )
 
     if theme_assignments:
         theme_clusters = _themes_from_photo_assignments(stacks, theme_assignments)

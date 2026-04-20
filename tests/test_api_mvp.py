@@ -498,3 +498,42 @@ def test_stack_ignore_and_delete_endpoints(tmp_path, monkeypatch) -> None:
 
     # At least one source file from the deleted stack should be removed from disk.
     assert not (path_a.exists() and path_b.exists())
+
+
+def test_theme_description_can_be_updated(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+
+    project = client.post("/api/projects", json={"name": "Theme Description"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    themes_before = client.get(f"/api/projects/{project_id}/themes")
+    assert themes_before.status_code == 200
+    theme_id = themes_before.json()["items"][0]["id"]
+
+    patch = client.patch(
+        f"/api/projects/{project_id}/themes/{theme_id}",
+        json={"description": "City mornings and street life"},
+    )
+    assert patch.status_code == 200
+    assert patch.json()["description"] == "City mornings and street life"
+
+    themes_after = client.get(f"/api/projects/{project_id}/themes")
+    assert themes_after.status_code == 200
+    updated = next((item for item in themes_after.json()["items"] if item["id"] == theme_id), None)
+    assert updated is not None
+    assert updated["description"] == "City mornings and street life"
+
+
+def test_reassign_themes_endpoint_exists(tmp_path, monkeypatch) -> None:
+    client = _project_client(tmp_path, monkeypatch)
+
+    project = client.post("/api/projects", json={"name": "Theme Reassign"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    res = client.post(f"/api/projects/{project_id}/themes/reassign")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["status"] == "ok"
+    assert "summary" in payload

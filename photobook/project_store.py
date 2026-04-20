@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS stack_picks (
 CREATE TABLE IF NOT EXISTS themes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     color TEXT NOT NULL,
     order_index INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -202,6 +203,10 @@ def ensure_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        cols = conn.execute("PRAGMA table_info(themes)").fetchall()
+        col_names = {str(item[1]) for item in cols}
+        if "description" not in col_names:
+            conn.execute("ALTER TABLE themes ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 
 
 def upsert_references(db_path: Path, references: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1421,8 +1426,8 @@ def ensure_default_theme(db_path: Path) -> None:
         if count > 0:
             return
         conn.execute(
-            "INSERT INTO themes (title, color, order_index) VALUES (?, ?, 1)",
-            ("Highlights", DEFAULT_THEME_COLORS[0]),
+            "INSERT INTO themes (title, description, color, order_index) VALUES (?, ?, ?, 1)",
+            ("Highlights", "", DEFAULT_THEME_COLORS[0]),
         )
 
 
@@ -1431,7 +1436,7 @@ def list_themes(db_path: Path) -> list[dict[str, Any]]:
     with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, title, color, order_index, created_at FROM themes ORDER BY order_index, id"
+            "SELECT id, title, description, color, order_index, created_at FROM themes ORDER BY order_index, id"
         ).fetchall()
         assignments = conn.execute("SELECT theme_id, stack_id FROM theme_stacks").fetchall()
 
@@ -1447,14 +1452,14 @@ def list_themes(db_path: Path) -> list[dict[str, Any]]:
     return items
 
 
-def create_theme(db_path: Path, title: str, color: str | None = None) -> dict[str, Any]:
+def create_theme(db_path: Path, title: str, color: str | None = None, description: str | None = None) -> dict[str, Any]:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT COALESCE(MAX(order_index), 0) FROM themes").fetchone()
         next_order = int(row[0]) + 1 if row else 1
         color_choice = color or DEFAULT_THEME_COLORS[(next_order - 1) % len(DEFAULT_THEME_COLORS)]
         cursor = conn.execute(
-            "INSERT INTO themes (title, color, order_index) VALUES (?, ?, ?)",
-            (title, color_choice, next_order),
+            "INSERT INTO themes (title, description, color, order_index) VALUES (?, ?, ?, ?)",
+            (title, (description or "").strip(), color_choice, next_order),
         )
         theme_id = int(cursor.lastrowid)
 
@@ -1478,7 +1483,7 @@ def delete_theme(db_path: Path, theme_id: int) -> None:
 def update_theme(db_path: Path, theme_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     updates = []
     values: list[Any] = []
-    for key in ["title", "color"]:
+    for key in ["title", "description", "color"]:
         if key in payload and payload[key] is not None:
             updates.append(f"{key} = ?")
             values.append(payload[key])

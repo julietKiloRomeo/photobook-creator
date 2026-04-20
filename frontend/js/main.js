@@ -61,8 +61,10 @@ const STACKS_WINDOW_DEFAULT = 40;
 const STACKS_WINDOW_STEP = 30;
 const TIMELINE_WINDOW_DEFAULT = 80;
 const TIMELINE_WINDOW_STEP = 60;
-const THEME_WINDOW_DEFAULT = 24;
-const THEME_WINDOW_STEP = 20;
+const THEME_WINDOW_DEFAULT = 6;
+const THEME_WINDOW_STEP = 6;
+const POOL_WINDOW_DEFAULT = 20;
+const POOL_WINDOW_STEP = 20;
 const BOOK_PAGES_WINDOW_DEFAULT = 40;
 const BOOK_PAGES_WINDOW_STEP = 30;
 const BOOK_PHOTOS_WINDOW_DEFAULT = 40;
@@ -114,7 +116,7 @@ let inspectMode = 'generic';
 let showIgnoredStacks = false;
 let stacksWindow = STACKS_WINDOW_DEFAULT;
 let timelineWindow = TIMELINE_WINDOW_DEFAULT;
-let poolWindow = THEME_WINDOW_DEFAULT;
+let poolWindow = POOL_WINDOW_DEFAULT;
 const themeWindowById = {};
 const bookPagesWindowByTheme = {};
 const bookPhotosWindowByTheme = {};
@@ -325,13 +327,14 @@ function applyThemesFromApi(items){
   themes=(items||[]).map((theme)=>({
     id:String(theme.id),
     title:theme.title||'Theme',
+    description:theme.description||'',
     color:theme.color||THEME_COLORS[0],
     stacks:(theme.stack_ids||[]).map((sid)=>String(sid)),
   }));
   const assigned = new Set(themes.flatMap((theme)=>theme.stacks));
   unassigned=STACKS.map((stack)=>String(stack.id)).filter((sid)=>!assigned.has(sid));
   if(!themes.length){
-    themes=[{id:'local-default',title:'Highlights',stacks:[],color:THEME_COLORS[0]}];
+    themes=[{id:'local-default',title:'Highlights',description:'',stacks:[],color:THEME_COLORS[0]}];
     unassigned=STACKS.map((stack)=>String(stack.id));
   }
 }
@@ -350,7 +353,7 @@ async function syncModelFromApi(){
   if(themeRes.ok && Array.isArray(themeRes.data?.items)){
     applyThemesFromApi(themeRes.data.items);
   }else{
-    themes=[{id:'local-default',title:'Highlights',stacks:[],color:THEME_COLORS[0]}];
+    themes=[{id:'local-default',title:'Highlights',description:'',stacks:[],color:THEME_COLORS[0]}];
     unassigned=STACKS.map((stack)=>String(stack.id));
   }
   updateLensLocks();
@@ -485,7 +488,7 @@ function showMoreTimeline(){timelineWindow+=TIMELINE_WINDOW_STEP;renderTimeline(
 function showAllTimeline(){timelineWindow=Number.MAX_SAFE_INTEGER;renderTimeline();}
 function showMoreThemeStacks(tid){themeWindowById[tid]=getThemeWindow(tid)+THEME_WINDOW_STEP;renderThemes();}
 function showAllThemeStacks(tid){themeWindowById[tid]=Number.MAX_SAFE_INTEGER;renderThemes();}
-function showMorePool(){poolWindow+=THEME_WINDOW_STEP;renderThemes();}
+function showMorePool(){poolWindow+=POOL_WINDOW_STEP;renderThemes();}
 function showAllPool(){poolWindow=Number.MAX_SAFE_INTEGER;renderThemes();}
 function showMoreBookPages(tid){bookPagesWindowByTheme[tid]=getBookPagesWindow(tid)+BOOK_PAGES_WINDOW_STEP;renderPagesRow(tid);}
 function showAllBookPages(tid){bookPagesWindowByTheme[tid]=Number.MAX_SAFE_INTEGER;renderPagesRow(tid);}
@@ -806,11 +809,14 @@ function renderThemes(){
     const shownStacks=orderedStacks.slice(0,getThemeWindow(t.id));
     const block=document.createElement('div');block.className='theme-block';block.dataset.tid=t.id;
     block.innerHTML=`<div class="theme-head">
-      <div class="theme-color-dot" style="background:${t.color}"></div>
-      <input class="theme-title-inp" value="${t.title}" onchange="renameTheme('${t.id}',this.value)"/>
-      <span class="theme-count">${orderedStacks.length} stack${orderedStacks.length!==1?'s':''}</span>
-      <button class="ibc" onclick="goLens('book');setActiveTheme('${t.id}')">→ book</button>
-      <button class="ibc del" onclick="delTheme('${t.id}')">✕</button>
+      <div class="theme-head-top">
+        <div class="theme-color-dot" style="background:${t.color}"></div>
+        <input class="theme-title-inp" value="${escAttr(t.title)}" onchange="renameTheme('${t.id}',this.value)"/>
+        <span class="theme-count">${orderedStacks.length} stack${orderedStacks.length!==1?'s':''}</span>
+        <button class="ibc" onclick="goLens('book');setActiveTheme('${t.id}')">→ book</button>
+        <button class="ibc del" onclick="delTheme('${t.id}')">✕</button>
+      </div>
+      <input class="theme-desc-inp" placeholder="Describe theme for AI assignment" value="${escAttr(t.description||'')}" onchange="renameThemeDescription('${t.id}',this.value)"/>
     </div>
     <div class="theme-chips" id="tc-${t.id}" ondragover="dov(event,'${t.id}')" ondrop="ddr(event,'${t.id}')" ondragleave="dlv(event)"></div>
     <div class="drop-target" id="dt-${t.id}" ondragover="dov(event,'${t.id}')" ondrop="ddr(event,'${t.id}')" ondragleave="dlv(event)">Drop stacks here</div>`;
@@ -873,13 +879,24 @@ function makeChip(sid,from){
   chip.draggable=true;
   chip.dataset.sid=sid;
   chip.dataset.from=from;
+  const assignOptions = [
+    `<button class="chip-assign-item" type="button" onclick="chipQuickAssign(event,'${sid}','${from}','pool')">Unassigned</button>`,
+    ...themes.map((theme)=>`<button class="chip-assign-item" type="button" onclick="chipQuickAssign(event,'${sid}','${from}','${escAttr(theme.id)}')">${escAttr(theme.title)}</button>`),
+    `<button class="chip-assign-item chip-assign-new" type="button" onclick="chipQuickAssignNew(event,'${sid}','${from}')">+ New theme…</button>`,
+  ].join('');
   chip.innerHTML=`<div class="tl-thumb" style="${photoStyle(pick)}"></div>
     ${isPool?'<div class="theme-stack-badge">unassigned</div>':''}
     <div class="tl-info">
       <div class="tl-name">${escAttr(s.label)}</div>
       <div style="font-size:10px;color:var(--color-text-tertiary);margin-top:1px">${escAttr(day)}</div>
     </div>
-    ${isPool?'':`<button class="theme-stack-remove" title="Remove from theme" onclick="chipRemove(event,'${sid}','${from}')">✕</button>`}`;
+    ${isPool?'':`<button class="theme-stack-remove" title="Remove from theme" onclick="chipRemove(event,'${sid}','${from}')">✕</button>`}
+    <div class="chip-qa" onclick="event.stopPropagation()">
+      <button class="chip-qa-btn chip-qa-assign" type="button" onclick="chipToggleAssignMenu(event,this)">Assign</button>
+      <div class="chip-assign-pop">${assignOptions}</div>
+      <button class="chip-qa-btn" type="button" onclick="chipQuickIgnore(event,'${sid}')">${s.ignored?'Unignore':'Ignore'}</button>
+      <button class="chip-qa-btn danger" type="button" onclick="chipQuickDelete(event,'${sid}')">Delete</button>
+    </div>`;
   chip.onclick=()=>openStack(sid);
   chip.ondragstart=e=>{dragSid=sid;dragFrom=from;chip.classList.add('dragging');};
   chip.ondragend=()=>{chip.classList.remove('dragging');clearDrop();};
@@ -906,10 +923,120 @@ function chipRemove(event,sid,from){
   void api.assignTheme({stack_id:String(sid),theme_id:null});
   unassigned.push(sid);renderThemes();
 }
+function normalizeStackFrom(sid,fallback='pool'){
+  const theme=themeOf(sid);
+  if(theme)return theme.id;
+  if(unassigned.includes(sid))return 'pool';
+  return fallback;
+}
+function closeAssignMenus(){
+  document.querySelectorAll('.chip-assign-pop.open').forEach((el)=>el.classList.remove('open'));
+}
+function chipToggleAssignMenu(event,button){
+  event?.stopPropagation();
+  const pop=button?.nextElementSibling;
+  if(!pop)return;
+  const willOpen=!pop.classList.contains('open');
+  closeAssignMenus();
+  if(willOpen)pop.classList.add('open');
+}
+async function assignStackToTheme(sid,from,toTid){
+  const source=normalizeStackFrom(sid,from);
+  if(source===toTid)return;
+  if(source==='pool')unassigned=unassigned.filter(x=>x!==sid);
+  else{
+    const srcTheme=themes.find(x=>x.id===source);
+    if(srcTheme)srcTheme.stacks=srcTheme.stacks.filter(x=>x!==sid);
+  }
+  if(toTid==='pool'){
+    if(!unassigned.includes(sid))unassigned.push(sid);
+  }else{
+    const targetTheme=themes.find(x=>x.id===toTid);
+    if(targetTheme && !targetTheme.stacks.includes(sid))targetTheme.stacks.push(sid);
+  }
+  renderThemes();
+  updateBadges();
+  const result=await api.assignTheme({stack_id:String(sid),theme_id:toTid==='pool'?null:Number(toTid)});
+  if(!result.ok){
+    await syncModelFromApi();
+    rerenderActiveLens();
+    showToast('Could not assign stack');
+  }
+}
+async function chipQuickAssign(event,sid,from,toTid){
+  event?.stopPropagation();
+  closeAssignMenus();
+  await assignStackToTheme(sid,from,toTid);
+}
+async function chipQuickAssignNew(event,sid,from){
+  event?.stopPropagation();
+  closeAssignMenus();
+  const created=await api.addTheme({title:'New theme'});
+  if(!created.ok){
+    showToast('Could not create theme');
+    return;
+  }
+  await syncModelFromApi();
+  const nextThemeId=String(created.data?.id||'');
+  if(!nextThemeId){
+    rerenderActiveLens();
+    return;
+  }
+  await assignStackToTheme(sid,normalizeStackFrom(sid,from),nextThemeId);
+}
+async function chipAssignSelect(event,sid,from,value){
+  event?.stopPropagation();
+  if(!value)return;
+  if(value==='__new__'){
+    const created=await api.addTheme({title:'New theme'});
+    if(!created.ok){
+      showToast('Could not create theme');
+      return;
+    }
+    await syncModelFromApi();
+    const nextThemeId=String(created.data?.id||'');
+    if(!nextThemeId){
+      rerenderActiveLens();
+      return;
+    }
+    await assignStackToTheme(sid,normalizeStackFrom(sid,from),nextThemeId);
+    return;
+  }
+  await assignStackToTheme(sid,from,value);
+}
+async function chipQuickIgnore(event,sid){
+  event?.stopPropagation();
+  const stack=getS(sid);
+  const nextIgnored=!Boolean(stack?.ignored);
+  const result=await api.ignoreStack(sid,nextIgnored);
+  if(!result.ok){
+    showToast('Could not update ignore state');
+    return;
+  }
+  await syncModelFromApi();
+  rerenderActiveLens();
+  showToast(nextIgnored?'Stack ignored':'Stack restored');
+}
+async function chipQuickDelete(event,sid){
+  event?.stopPropagation();
+  if(!window.confirm('Delete this stack and its source files?'))return;
+  const result=await api.deleteStack(sid);
+  if(!result.ok){
+    showToast('Delete failed');
+    return;
+  }
+  await syncModelFromApi();
+  rerenderActiveLens();
+  showToast('Stack deleted');
+}
 function renameTheme(tid,val){
   const t=themes.find(x=>x.id===tid);if(t)t.title=val;
   void api.patchTheme(Number(tid),{title:val});
   renderBookNav();
+}
+function renameThemeDescription(tid,val){
+  const t=themes.find(x=>x.id===tid);if(t)t.description=val;
+  void api.patchTheme(Number(tid),{description:val});
 }
 function delTheme(tid){
   const t=themes.find(x=>x.id===tid);if(t)unassigned.push(...t.stacks);
@@ -924,6 +1051,80 @@ async function addTheme(){
     await syncModelFromApi();
   }
   renderThemes();updateBadges();
+}
+function reassignReasonMessage(reason){
+  if(reason==='no_gateway_config')return 'AI gateway is not configured';
+  if(reason==='llm_http_error')return 'AI request failed';
+  if(reason==='schema_parse_failed')return 'AI returned invalid structured output';
+  if(reason==='llm_refusal')return 'AI refused the request';
+  if(reason==='no_llm_output')return 'AI returned no output';
+  if(reason==='no_unassigned_stacks')return 'No unassigned stacks to process';
+  if(reason==='no_confident_matches')return 'No confident matches for current unassigned stacks';
+  return 'Unknown AI assignment outcome';
+}
+async function rerunThemeAssignment(){
+  showUploadOverlay('Re-running AI assignment','Preparing themes and unassigned stacks',8,{
+    phase:'refining',
+    isRealUpdate:true,
+    batchLabel:'Theme assignment',
+    batchPercent:8,
+  });
+  let pulse=8;
+  const pulseTimer=setInterval(()=>{
+    pulse=Math.min(92,pulse+4);
+    showUploadOverlay('Re-running AI assignment','Building contact sheets and asking model',pulse,{
+      phase:'refining',
+      isRealUpdate:false,
+      batchLabel:'Theme assignment',
+      batchPercent:pulse,
+    });
+  },350);
+
+  const result=await api.reassignThemes();
+  clearInterval(pulseTimer);
+  if(!result.ok){
+    const reason=String(result.data?.detail?.reason||'unknown');
+    const detail=reassignReasonMessage(reason);
+    showUploadOverlay('AI assignment failed',detail,100,{
+      failed:true,
+      phase:'failed',
+      isRealUpdate:true,
+      batchLabel:'Theme assignment',
+      batchPercent:100,
+    });
+    await new Promise((resolve)=>setTimeout(resolve,1200));
+    hideUploadOverlay();
+    showToast(`AI re-assignment failed: ${detail}`);
+    return;
+  }
+
+  showUploadOverlay('Re-running AI assignment','Applying assigned stacks to themes',97,{
+    phase:'refining',
+    isRealUpdate:true,
+    batchLabel:'Theme assignment',
+    batchPercent:97,
+  });
+  await syncModelFromApi();
+  rerenderActiveLens();
+  const assigned=Number(result.data?.summary?.assigned_stacks||0);
+  const created=Number(result.data?.summary?.created_themes||0);
+  const reason=String(result.data?.summary?.reason||'ok');
+  const detail=assigned>0
+    ?`Assigned ${assigned} stack${assigned!==1?'s':''}${created>0?` and created ${created} theme${created!==1?'s':''}`:''}`
+    :reassignReasonMessage(reason);
+  showUploadOverlay('AI assignment complete',detail,100,{
+    phase:'completed',
+    isRealUpdate:true,
+    batchLabel:'Theme assignment',
+    batchPercent:100,
+  });
+  await new Promise((resolve)=>setTimeout(resolve,900));
+  hideUploadOverlay();
+  if(assigned>0){
+    showToast(`AI assigned ${assigned} stack${assigned!==1?'s':''}${created>0?` · +${created} theme${created!==1?'s':''}`:''}`);
+  }else{
+    showToast(`AI assigned 0 stacks: ${detail}`);
+  }
 }
 
 function renderTimeline(){
@@ -1621,6 +1822,7 @@ async function bootstrap(){
   if(uploadInput){
     uploadInput.addEventListener('change',handleUploadChange);
   }
+  document.addEventListener('click',closeAssignMenus);
   window.addEventListener('keydown',handleInspectKeys);
   await api.getReferences();
   await syncModelFromApi();
@@ -1631,6 +1833,12 @@ async function bootstrap(){
 Object.assign(window,{
   addTheme,
   addTxt,
+  chipAssignSelect,
+  chipQuickAssign,
+  chipQuickAssignNew,
+  chipQuickDelete,
+  chipQuickIgnore,
+  chipToggleAssignMenu,
   chipRemove,
   closeModal,
   confirmPick,
@@ -1648,6 +1856,8 @@ Object.assign(window,{
   openStack,
   pickDuel,
   renameTheme,
+  renameThemeDescription,
+  rerunThemeAssignment,
   rmSlot,
   selRole,
   setActiveTheme,

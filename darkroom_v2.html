@@ -73,7 +73,10 @@
       <div class="section-title">Themes</div>
       <div class="section-meta">Group stacks into stories — drag between themes freely</div>
     </div>
-    <button class="btn-p" style="font-size:12px;padding:6px 13px" onclick="addTheme()">+ New theme</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-s" style="font-size:12px;padding:6px 13px" onclick="rerunThemeAssignment()">Re-run AI assignment</button>
+      <button class="btn-p" style="font-size:12px;padding:6px 13px" onclick="addTheme()">+ New theme</button>
+    </div>
   </div>
   <div class="themes-layout">
     <div id="themes-canvas"></div>

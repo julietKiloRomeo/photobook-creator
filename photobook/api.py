@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from photobook.clustering import run_clustering_pipeline
+from photobook.clustering import ThemeReassignError, rerun_theme_assignment_pipeline, run_clustering_pipeline
 from photobook.project_store import (
     assign_stack_theme,
     auto_build_book,
@@ -143,11 +143,13 @@ class DuelPickRequest(BaseModel):
 
 class ThemeCreateRequest(BaseModel):
     title: str = "New theme"
+    description: str | None = None
     color: str | None = None
 
 
 class ThemePatchRequest(BaseModel):
     title: str | None = None
+    description: str | None = None
     color: str | None = None
     stack_ids: list[str] | None = None
 
@@ -857,7 +859,7 @@ def create_app() -> FastAPI:
     def post_project_theme(project_id: str, payload: ThemeCreateRequest) -> JSONResponse:
         ctx = _ctx(project_id)
         _require_final_cluster(ctx["db_path"])
-        created = create_theme(ctx["db_path"], payload.title, payload.color)
+        created = create_theme(ctx["db_path"], payload.title, payload.color, payload.description)
         return JSONResponse(created, status_code=201)
 
     @app.patch("/api/projects/{project_id}/themes/{theme_id}")
@@ -884,6 +886,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Theme not found")
         assign_stack_theme(ctx["db_path"], payload.stack_id, payload.theme_id)
         return JSONResponse({"status": "ok"})
+
+    @app.post("/api/projects/{project_id}/themes/reassign")
+    def reassign_project_themes(project_id: str) -> JSONResponse:
+        ctx = _ctx(project_id)
+        _require_final_cluster(ctx["db_path"])
+        try:
+            summary = rerun_theme_assignment_pipeline(ctx["db_path"])
+        except ThemeReassignError as exc:
+            raise HTTPException(status_code=503, detail={"reason": exc.reason, "message": exc.message}) from exc
+        return JSONResponse({"status": "ok", "summary": summary, "items": list_themes(ctx["db_path"])})
 
     @app.get("/api/projects/{project_id}/timeline")
     def get_project_timeline(project_id: str) -> JSONResponse:
@@ -1089,7 +1101,7 @@ def create_app() -> FastAPI:
     def post_theme(payload: ThemeCreateRequest) -> JSONResponse:
         ctx = _ctx(None)
         _require_final_cluster(ctx["db_path"])
-        created = create_theme(ctx["db_path"], payload.title, payload.color)
+        created = create_theme(ctx["db_path"], payload.title, payload.color, payload.description)
         return JSONResponse(created, status_code=201)
 
     @app.patch("/api/themes/{theme_id}")
@@ -1116,6 +1128,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Theme not found")
         assign_stack_theme(ctx["db_path"], payload.stack_id, payload.theme_id)
         return JSONResponse({"status": "ok"})
+
+    @app.post("/api/themes/reassign")
+    def post_theme_reassignment() -> JSONResponse:
+        ctx = _ctx(None)
+        _require_final_cluster(ctx["db_path"])
+        try:
+            summary = rerun_theme_assignment_pipeline(ctx["db_path"])
+        except ThemeReassignError as exc:
+            raise HTTPException(status_code=503, detail={"reason": exc.reason, "message": exc.message}) from exc
+        return JSONResponse({"status": "ok", "summary": summary, "items": list_themes(ctx["db_path"])})
 
     @app.get("/api/timeline")
     def get_timeline() -> JSONResponse:

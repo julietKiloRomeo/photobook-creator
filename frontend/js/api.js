@@ -118,6 +118,12 @@ export const api = {
     });
   },
 
+  reassignThemes() {
+    return request('/themes/reassign', {
+      method: 'POST',
+    });
+  },
+
   getTimeline() {
     return request('/timeline');
   },
