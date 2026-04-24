@@ -1,9 +1,8 @@
 # Agent Workflow
 
-We work in tracked steps (`step-1.md`, `step-2.md`, etc.).
-- The current step is the smallest numbered step that is not marked "(Completed)".
-- Update the current step file as work is completed.
-- Mark completion by adding "(Completed)" to the step title.
+GitHub issues are the workflow source of truth.
+- Track status, implementation notes, test evidence, and handoff details directly in the relevant issue.
+- Do not use local step tracker files (`step-*.md`) for project progress.
 
 ## Roles and Routing
 
