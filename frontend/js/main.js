@@ -284,6 +284,21 @@ function handleInspectKeys(event){
   }
 }
 
+function makeCardKeyboardAccessible(element,handler,label){
+  if(!element || typeof handler!=='function')return;
+  element.classList.add('clickable-card');
+  element.setAttribute('role','button');
+  element.tabIndex=0;
+  if(label){
+    element.setAttribute('aria-label',label);
+  }
+  element.addEventListener('keydown',(event)=>{
+    if(event.key!=='Enter' && event.key!==' ')return;
+    event.preventDefault();
+    handler();
+  });
+}
+
 function normalizePhoto(photo){
   const pid = String(photo.id);
   return {
@@ -509,7 +524,9 @@ function renderStacks(){
     const theme=themeOf(s.id);
     const card=document.createElement('div');
     card.className='stack-card '+(res?'resolved':'unresolved')+(s.ignored?' ignored':'');
-    card.onclick=()=>openStack(s.id);
+    const openStackCard=()=>openStack(s.id);
+    card.onclick=openStackCard;
+    makeCardKeyboardAccessible(card,openStackCard,`Open stack ${s.label}`);
     let fanHTML='';
     const count=s.photos.length;
     if((s.pick||s.previousPick) && pick){
@@ -595,7 +612,10 @@ function openStack(sid){
     const p=getP(pid);if(!p)return;
     const d=document.createElement('div');
     d.className='photo-opt'+((tempPick===pid)?' sel':'');
-    d.dataset.pid=pid;d.onclick=()=>selPick(pid);
+    d.dataset.pid=pid;
+    const pickPhoto=()=>selPick(pid);
+    d.onclick=pickPhoto;
+    makeCardKeyboardAccessible(d,pickPhoto,`Select ${p.label}`);
     d.innerHTML=`<div class="photo-opt-img" style="${photoStyle(p,'#ccc','contain')}display:flex;align-items:flex-end;padding:5px"><span style="font-size:9px;color:rgba(0,0,0,.38)">${escAttr(p.label)}</span></div>
       <div class="photo-opt-lbl">${escAttr(p.label)}</div>
       <div class="checkmark"><div class="ck"></div></div>`;
@@ -897,7 +917,9 @@ function makeChip(sid,from){
       <button class="chip-qa-btn" type="button" onclick="chipQuickIgnore(event,'${sid}')">${s.ignored?'Unignore':'Ignore'}</button>
       <button class="chip-qa-btn danger" type="button" onclick="chipQuickDelete(event,'${sid}')">Delete</button>
     </div>`;
-  chip.onclick=()=>openStack(sid);
+  const openChipStack=()=>openStack(sid);
+  chip.onclick=openChipStack;
+  makeCardKeyboardAccessible(chip,openChipStack,`Open stack ${s.label}`);
   chip.ondragstart=e=>{dragSid=sid;dragFrom=from;chip.classList.add('dragging');};
   chip.ondragend=()=>{chip.classList.remove('dragging');clearDrop();};
   return chip;
@@ -1144,7 +1166,9 @@ function renderTimeline(){
       const res=resolved(s);const theme=themeOf(s.id);const pick=getPick(s.id);
       const card=document.createElement('div');
       card.className='tl-card '+(res?'resolved':'unresolved');
-      card.onclick=()=>openStack(s.id);
+      const openTimelineStack=()=>openStack(s.id);
+      card.onclick=openTimelineStack;
+      makeCardKeyboardAccessible(card,openTimelineStack,`Open stack ${s.label}`);
       const d=new Date(s.date);const dayStr=d.toLocaleDateString('default',{weekday:'short',day:'numeric'});
       card.innerHTML=`<div class="tl-thumb" style="${photoStyle(pick)}"></div>
         <div class="tl-info">
@@ -1188,7 +1212,9 @@ function renderBookNav(){
     const item=document.createElement('div');
     item.className='book-nav-item'+(activeThemeId===t.id?' active':'');
     item.innerHTML=`<div style="display:flex;align-items:center;gap:6px"><div style="width:8px;height:8px;border-radius:50%;background:${t.color};flex-shrink:0"></div>${t.title}</div><div class="book-nav-sub">${pg} page${pg!==1?'s':''} · ${visibleThemeCount} stack${visibleThemeCount!==1?'s':''}</div>`;
-    item.onclick=()=>setActiveTheme(t.id);
+    const setThemeActive=()=>setActiveTheme(t.id);
+    item.onclick=setThemeActive;
+    makeCardKeyboardAccessible(item,setThemeActive,`Open theme ${t.title}`);
     nav.appendChild(item);
   });
   updateBadges();
@@ -1221,7 +1247,9 @@ function renderPagesRow(tid){
     }
     card.innerHTML=`<div class="pg-preview" style="grid-template-columns:${gcols};grid-template-rows:${grows}">${prevHTML}</div>
       <div class="pg-foot">p.${pg.num}</div>`;
-    card.onclick=()=>setActivePage(pg.id,tid);
+    const setPageActive=()=>setActivePage(pg.id,tid);
+    card.onclick=setPageActive;
+    makeCardKeyboardAccessible(card,setPageActive,`Open page ${pg.num}`);
     row.appendChild(card);
   });
   const add=document.createElement('button');add.className='add-pg';
