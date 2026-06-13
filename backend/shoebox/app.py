@@ -10,10 +10,12 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from shoebox import __version__
+from shoebox.store import initialise
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="shoebox", version=__version__)
+    initialise()
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
