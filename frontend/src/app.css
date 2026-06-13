@@ -1,0 +1,65 @@
+/* shoebox — design tokens
+ * Inherits palette from v1 darkroom (calm, flat, family album).
+ */
+:root {
+  --color-bg: #fafaf7;
+  --color-surface: #ffffff;
+  --color-border: #e8e6df;
+  --color-border-soft: #f0eee8;
+  --color-text: #1c1b1f;
+  --color-text-soft: #5b5a63;
+  --color-text-muted: #8c8a93;
+  --color-accent: #4a44c2;
+  --color-accent-soft: #eeedfe;
+  --color-success: #1d9e75;
+  --color-warn: #c87a2f;
+  --color-danger: #b3422f;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-8: 48px;
+
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --shadow-sm: 0 1px 2px rgba(28, 27, 31, 0.04);
+  --shadow-md: 0 4px 16px rgba(28, 27, 31, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

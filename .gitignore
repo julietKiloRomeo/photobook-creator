@@ -15,6 +15,15 @@ playwright-report/
 test-results/
 *.egg-info/
 
+# v2 runtime data — projects, originals, derivatives, embeddings
+data/
+!data/.gitkeep
+
+# v2 frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.svelte-kit/
+
 !.trufflehog/exclude.txt
 
 .env
