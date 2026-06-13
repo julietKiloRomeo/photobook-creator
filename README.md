@@ -1,125 +1,45 @@
-# Photo Book Creator (Restart)
+# Photo Book Creator (v2)
 
-This branch is a clean restart.
+A calm, mobile-first, locally-hosted curation table where a family turns a pile of photos into a print-ready photo book together.
 
-- Frontend includes a projects front page (`index.html`) and darkroom editor (`darkroom_v2.html`).
-- Persistent storage: SQLite + per-project file storage under `.photobook-data/projects/<project-id>/`.
-- Agent setup is kept in `AGENTS.md`, `.agents/`, and `.codex/`.
-- Darkroom UI assets are split into `frontend/styles/darkroom.css` and `frontend/js/*`.
+> **Status: restart in progress.** The previous implementation is preserved verbatim under [`archive/v1/`](./archive/v1/). v2 is being rebuilt from scratch around a sharper product vision. See `step-1.md` for the active milestone.
 
-## Product Direction
+## Vision
 
-The workflow remains:
+- **Audience**: non-technical family members — parents, kids, grandparents.
+- **Deployment**: owner's laptop in dev, a small box (`valhalla` mini-PC) on the LAN for staging. Travel router provides network only.
+- **Devices**: phones for contributors, laptop for the owner.
+- **Output**: structured JSON handoff — convertible later to Pixum / Mixbook formats.
 
-1. Intake references (paths/URIs + metadata)
-2. Organize into chapters and pages
-3. Place photo/text items on pages
-4. Export structured JSON
+## The three concepts
 
-## Requirements
+Everything in the product is built around three nouns:
 
-- Python 3.10+
-- `uv`
+1. **Stacks** — groups of visually similar shots. Pick the best per stack.
+2. **Themes** — groups of stacks telling a story (e.g. "Beach day").
+3. **Book** — pages per theme with photos and text in layouts.
 
-## Install
+Duel (rapid 1:1 picking) and Timeline (chronological overview) are demoted from top-level navigation to tools that serve the three concepts.
 
-```bash
-uv sync --extra dev
-```
+## Decisions locked in
 
-For full-quality clustering (imagededup + OpenCLIP), install ML extras:
+- Backend: **FastAPI + SQLite**.
+- Frontend: **Svelte + Vite**, mobile-first responsive.
+- AI: three-tier pipeline — instant cheap (hash/EXIF/pHash) on upload, deferred heavy (visual clustering, theme proposals) on owner action, optional cloud (nicer theme names). Best viable local model quality.
+- Identity: per-device cookie. First visit asks name + color. No accounts.
+- Roles: owner / curator / contributor / viewer.
+- Votes: automatic majority pick; owner can override.
+- Concurrency: last-write-wins with live refresh.
+- Storage: full-res originals on disk + multi-tier derivatives.
+- Export: JSON + `assets/` folder, vendor-agnostic.
+- Deploy target: Docker on `valhalla` behind Traefik.
 
-```bash
-uv sync --extra dev --extra ml
-```
+## Milestones
 
-Generate the vacation fixture pack (20 AI images + manifest) via OpenAI image generation using llm-gateway credentials from `~/.codex/config.toml` (`model_providers.topsoe`):
+- **M1** — Vertical slice MVP (single-user, polished): project → upload → process → stacks → themes → book → export.
+- **M2** — Multi-user: join-by-link, identity, roles, presence.
+- **M3** — Voting and Duel mode.
+- **M4** — Polish, Timeline lens, more layouts, deploy to `valhalla` via Docker + Traefik.
+- **M5** — Vendor export helpers (Pixum / Mixbook converters, PDF preview).
 
-```bash
-uv run scripts/generate_vacation_fixture_pack.py
-```
-
-Optional overrides:
-
-```bash
-uv run scripts/generate_vacation_fixture_pack.py --model gpt-image-1.5 --size 1024x1024 --quality low
-```
-
-## Run API + UI
-
-```bash
-uv run photobook-api --host 127.0.0.1 --port 8000
-```
-
-- `GET /` serves the projects front page.
-- `GET /darkroom/{project_id}` serves the darkroom editor for a project.
-- Default data root: `.photobook-data/`
-- Compatibility mode: set `PHOTOBOOK_DB_PATH=/path/to/project.db` for single-project direct DB mode.
-
-## API
-
-- `GET /api/health`
-- `GET /api/projects`
-- `POST /api/projects`
-- `GET /api/projects/{project_id}`
-- `POST /api/projects/{project_id}/uploads`
-- `GET /api/projects/{project_id}/uploads`
-- `GET /api/projects/{project_id}/references/{reference_id}/image`
-- `POST /api/projects/{project_id}/process`
-- `GET /api/projects/{project_id}/duplicates`
-- `POST /api/projects/{project_id}/reset`
-- `POST /api/projects/{project_id}/stacks/{stack_id}/split`
-- `GET /api/intake/references`
-- `POST /api/intake/references`
-- `GET /api/stacks`
-- `POST /api/duel/pick`
-- `GET /api/themes`
-- `POST /api/themes`
-- `PATCH /api/themes/{theme_id}`
-- `POST /api/themes/assign`
-- `GET /api/timeline`
-- `GET /api/chapters`
-- `POST /api/chapters`
-- `PATCH /api/chapters/{chapter_id}`
-- `POST /api/chapters/reorder`
-- `GET /api/chapters/{chapter_id}/pages`
-- `POST /api/chapters/{chapter_id}/pages`
-- `GET /api/pages/{page_id}/items`
-- `POST /api/pages/{page_id}/items`
-- `PATCH /api/pages/items/{item_id}`
-- `POST /api/book/auto-build`
-- `POST /api/export`
-
-## Local Checks
-
-Required backend checks:
-
-```bash
-uv run --extra dev ruff check .
-uv run --extra dev pytest -q
-```
-
-Strict backend integration gate:
-
-```bash
-uv run --extra dev pytest -m gate -q
-```
-
-## Gate Suite (Playwright)
-
-Run the strict gate suite locally when Playwright files are present (`package.json`, `playwright.config.*`, and `tests/e2e` or `e2e`):
-
-```bash
-npm ci
-npx playwright install --with-deps
-npx playwright test
-```
-
-## CI Behavior
-
-GitHub Actions defines two lanes:
-
-1. **Backend checks (required):** `uv sync --extra dev`, `ruff`, and `pytest`.
-2. **Full-app gate suite (non-blocking):** runs Playwright if present and is marked `continue-on-error: true`.
-
-If the gate lane fails, CI uploads Playwright artifacts (`playwright-report`, `test-results`) for debugging, but it does not block merging.
+See `AGENTS.md` for agent workflow and `step-1.md` (forthcoming) for the active step.
