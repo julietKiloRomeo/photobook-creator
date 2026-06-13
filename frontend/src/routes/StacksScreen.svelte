@@ -60,22 +60,12 @@
     return stack.picked_reference_id ?? stack.reference_ids[0];
   }
 
-  function counts(stacks: Stack[]) {
-    return {
-      pending: stacks.filter((s) => s.status === "pending").length,
-      resolved: stacks.filter((s) => s.status === "resolved").length,
-      ignored: stacks.filter((s) => s.status === "ignored").length,
-    };
-  }
-
   const FILTER_OPTIONS: ("pending" | "resolved" | "ignored" | "all")[] = [
     "pending",
     "resolved",
     "ignored",
     "all",
   ];
-
-  $: countByStatus = counts(stacks);
 
   onMount(refresh);
   $: if (projectId) refresh();
@@ -102,9 +92,16 @@
 {#if loading}
   <p class="muted">Loading stacks…</p>
 {:else if stacks.length === 0}
-  <p class="muted">
-    No stacks yet. Upload photos and tap <em>Process new photos</em> to create them.
-  </p>
+  {#if filter === "pending"}
+    <p class="muted">
+      Nothing pending — everything's been picked, or you haven't uploaded yet.
+      Try <button class="link" on:click={() => (filter = "all")}>All</button> to see resolved stacks.
+    </p>
+  {:else}
+    <p class="muted">
+      No stacks here. Upload photos and tap <em>Process new photos</em> to create them.
+    </p>
+  {/if}
 {:else}
   <ul class="grid" aria-label="Stacks">
     {#each stacks as stack (stack.id)}
@@ -314,6 +311,17 @@
   }
   .muted { color: var(--color-text-muted); }
   .error { color: var(--color-danger); }
+  .link {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--color-accent);
+    font-weight: 500;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
+  }
   @media (min-width: 700px) {
     .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
     .modal {

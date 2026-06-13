@@ -1,4 +1,4 @@
-# Step 1 — M1 Vertical Slice MVP
+# Step 1 — M1 Vertical Slice MVP (Completed)
 
 **Product name**: **shoebox** — the family shoebox of photos everyone reaches into. Deploys to `shoebox.valhalla` in M4.
 
