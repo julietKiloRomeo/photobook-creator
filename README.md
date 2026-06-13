@@ -1,8 +1,12 @@
-# Photo Book Creator (v2)
+# shoebox
 
-A calm, mobile-first, locally-hosted curation table where a family turns a pile of photos into a print-ready photo book together.
+The family shoebox of photos — everyone reaches in, picks favorites, and builds a book together.
+
+A calm, mobile-first, locally-hosted curation table where a family turns a pile of photos into a print-ready photo book. Deploys to `shoebox.valhalla` on the home LAN.
 
 > **Status: restart in progress.** The previous implementation is preserved verbatim under [`archive/v1/`](./archive/v1/). v2 is being rebuilt from scratch around a sharper product vision. See `step-1.md` for the active milestone.
+>
+> **Tests are not inherited from v1.** v1 tests asserted on v1 implementation details (endpoint paths, field names, DOM IDs) and would silently re-anchor v2 to v1's shape. v2 tests are written fresh against user intent — see the test policy in `step-1.md`.
 
 ## Vision
 
@@ -39,7 +43,7 @@ Duel (rapid 1:1 picking) and Timeline (chronological overview) are demoted from 
 - **M1** — Vertical slice MVP (single-user, polished): project → upload → process → stacks → themes → book → export.
 - **M2** — Multi-user: join-by-link, identity, roles, presence.
 - **M3** — Voting and Duel mode.
-- **M4** — Polish, Timeline lens, more layouts, deploy to `valhalla` via Docker + Traefik.
+- **M4** — Polish, Timeline lens, more layouts, deploy to `shoebox.valhalla` via Docker + Traefik.
 - **M5** — Vendor export helpers (Pixum / Mixbook converters, PDF preview).
 
 See `AGENTS.md` for agent workflow and `step-1.md` (forthcoming) for the active step.
