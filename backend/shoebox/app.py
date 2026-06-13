@@ -10,6 +10,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from shoebox import __version__
+from shoebox.api import projects as projects_router
+from shoebox.api import uploads as uploads_router
 from shoebox.store import initialise
 
 
@@ -20,5 +22,8 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
+
+    app.include_router(projects_router.router)
+    app.include_router(uploads_router.router)
 
     return app
