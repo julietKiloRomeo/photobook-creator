@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from shoebox.app import create_app
 from shoebox.config import Settings, get_settings
+from shoebox.jobs import reset_runner
 
 
 @pytest.fixture()
@@ -20,7 +21,9 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Settin
     """Settings pointed at an isolated tmp data dir, with the cache cleared."""
     monkeypatch.setenv("SHOEBOX_DATA_DIR", str(tmp_path / "data"))
     get_settings.cache_clear()
+    reset_runner()
     yield get_settings()
+    reset_runner()
     get_settings.cache_clear()
 
 
