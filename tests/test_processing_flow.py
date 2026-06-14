@@ -149,3 +149,66 @@ def test_renaming_a_theme_persists(client: TestClient, fixture_pack_dir: Path) -
 
     again = client.get(f"/api/projects/{project_id}/themes").json()
     assert any(t["id"] == theme_id and t["name"] == "Beach Day" for t in again)
+
+
+def test_user_created_theme_survives_processing(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    """Regression for B-1 (step-2 manual finding).
+
+    jkr added a theme before uploading photos, and it disappeared after
+    processing. User-created themes must survive any number of processing
+    runs — only AI-proposed themes the user has not touched may be
+    replaced by reprocessing.
+    """
+    project = client.post("/api/projects", json={"name": "Pre-upload theme"}).json()
+    project_id = project["id"]
+
+    user_theme = client.post(
+        f"/api/projects/{project_id}/themes",
+        json={"name": "Memories of Mom"},
+    ).json()
+    user_theme_id = user_theme["id"]
+
+    _upload_all(client, project_id, fixture_pack_dir)
+    job_id = client.post(f"/api/projects/{project_id}/process").json()["id"]
+    _wait_for_job(client, job_id)
+
+    themes_after = client.get(f"/api/projects/{project_id}/themes").json()
+    surviving = [t for t in themes_after if t["id"] == user_theme_id]
+    assert surviving, (
+        "User-created theme was wiped by processing. "
+        f"Themes after processing: {[t['name'] for t in themes_after]}"
+    )
+    assert surviving[0]["name"] == "Memories of Mom"
+
+
+def test_renamed_auto_theme_survives_reprocessing(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    """Regression for B-1, second arm.
+
+    If a user renames an AI-proposed theme, that rename is implicit
+    adoption — the theme must survive subsequent reprocessing.
+    """
+    project = client.post("/api/projects", json={"name": "Rename then reprocess"}).json()
+    project_id = project["id"]
+    _upload_all(client, project_id, fixture_pack_dir)
+
+    first_job = client.post(f"/api/projects/{project_id}/process").json()["id"]
+    _wait_for_job(client, first_job)
+
+    themes = client.get(f"/api/projects/{project_id}/themes").json()
+    assert themes, "expected at least one auto-proposed theme after first processing"
+    chosen_id = themes[0]["id"]
+
+    renamed = client.patch(f"/api/themes/{chosen_id}", json={"name": "Sunset Walks"})
+    assert renamed.status_code == 200
+
+    second_job = client.post(f"/api/projects/{project_id}/process").json()["id"]
+    _wait_for_job(client, second_job)
+
+    themes_after = client.get(f"/api/projects/{project_id}/themes").json()
+    surviving = [t for t in themes_after if t["id"] == chosen_id]
+    assert surviving, "Renamed theme was wiped by reprocessing."
+    assert surviving[0]["name"] == "Sunset Walks"

@@ -80,16 +80,46 @@
   }
 
   async function addTextBlock(pageId: string) {
-    const content = prompt("Text for this slot:");
+    const content = prompt("Add a note for this page:");
     if (!content) return;
+    // Text blocks render in their own append-only list beneath the
+    // photo grid (slots 0..3 are reserved for photos). To keep
+    // slot_index unambiguous across kinds, text blocks use indices
+    // starting at 100 so they never collide with photo slots.
+    // See B-2 in step-2 manual findings.
     const items = itemsByPage[pageId] ?? [];
-    const nextSlot = items.length ? Math.max(...items.map((i) => i.slot_index)) + 1 : 0;
+    const textBlocks = items.filter((it) => it.kind === "text");
+    const nextSlot = textBlocks.length
+      ? Math.max(...textBlocks.map((it) => it.slot_index)) + 1
+      : 100;
     try {
       await api.addPageItem(pageId, { kind: "text", slot_index: nextSlot, text_content: content });
       await refreshTheme();
     } catch (e) {
       error = (e as Error).message;
     }
+  }
+
+  // Derived per-page item splits. Computed reactively from itemsByPage
+  // so Svelte re-renders the page contents whenever items change. Plain
+  // helper functions referenced from the template do NOT establish a
+  // reactive dependency on itemsByPage; reactive declarations do.
+  // See B-2 in step-2 manual findings.
+  let photoItemsByPage: Record<string, Array<PageItem | undefined>> = {};
+  let textBlocksByPage: Record<string, PageItem[]> = {};
+  $: {
+    const photos: Record<string, Array<PageItem | undefined>> = {};
+    const texts: Record<string, PageItem[]> = {};
+    for (const [pid, items] of Object.entries(itemsByPage)) {
+      photos[pid] = [0, 1, 2, 3].map((slot) =>
+        items.find((it) => it.kind === "photo" && it.slot_index === slot),
+      );
+      texts[pid] = items
+        .filter((it) => it.kind === "text")
+        .sort((a, b) => a.slot_index - b.slot_index);
+    }
+    photoItemsByPage = photos;
+    textBlocksByPage = texts;
   }
 
   async function deleteItem(itemId: string) {
@@ -139,10 +169,6 @@
       .filter((x): x is { stackId: string; refId: string } => x !== null);
   }
 
-  function itemAt(pageId: string, slot: number): PageItem | undefined {
-    return (itemsByPage[pageId] ?? []).find((it) => it.slot_index === slot);
-  }
-
   onMount(refresh);
   $: if (projectId) refresh();
   $: if (selectedThemeId) refreshTheme();
@@ -188,18 +214,15 @@
               <button class="page-action" on:click={() => addTextBlock(page.id)}>+ Text</button>
             </header>
             <div class="slots">
-              {#each Array(4) as _, slot}
-                {@const item = itemAt(page.id, slot)}
+              {#each photoItemsByPage[page.id] ?? [undefined, undefined, undefined, undefined] as item, slot}
                 <button
                   class="slot"
-                  class:filled={item?.kind === "photo"}
+                  class:filled={!!item}
                   on:click={() => openPicker(page.id, slot)}
                   aria-label={item ? "Change photo" : "Add photo"}
                 >
-                  {#if item?.kind === "photo" && item.reference_id}
+                  {#if item?.reference_id}
                     <img src={api.mediumUrl(projectId, item.reference_id)} alt="" />
-                  {:else if item?.kind === "text"}
-                    <span class="text-block">{item.text_content}</span>
                   {:else}
                     <span class="empty">+</span>
                   {/if}
@@ -213,6 +236,20 @@
                 {/if}
               {/each}
             </div>
+            {#if (textBlocksByPage[page.id] ?? []).length}
+              <ul class="text-blocks">
+                {#each textBlocksByPage[page.id] ?? [] as block (block.id)}
+                  <li>
+                    <span>{block.text_content}</span>
+                    <button
+                      class="remove-text"
+                      on:click={() => deleteItem(block.id)}
+                      aria-label="Remove text block"
+                    >✕</button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           </li>
         {/each}
       </ol>
@@ -337,16 +374,34 @@
   .slot:hover { border-color: var(--color-accent); }
   .slot.filled { border: 1px solid var(--color-border); }
   .slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .text-block {
+  .text-blocks {
+    list-style: none;
+    margin: var(--space-3) 0 0 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-2);
+  }
+  .text-blocks li {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: var(--space-3);
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-border-soft);
+    border-radius: var(--radius-sm);
     font-size: 0.95rem;
     color: var(--color-text);
-    text-align: center;
   }
+  .text-blocks li span { flex: 1; }
+  .remove-text {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: 0.9rem;
+    padding: 0 4px;
+  }
+  .remove-text:hover { color: var(--color-text); }
   .empty {
     display: flex;
     align-items: center;

@@ -4,6 +4,23 @@ GitHub issues are the workflow source of truth.
 - Track status, implementation notes, test evidence, and handoff details directly in the relevant issue.
 - Do not use local step tracker files (`step-*.md`) for project progress.
 
+## Communication: explicit names, no ambiguous pronouns
+
+When an agent talks to the user (in chat, in option lists, in commits, in issue comments), the agent MUST NOT use ambiguous pronouns like `I`, `you`, `we`, `us`, `our`. Use explicit names instead:
+
+- The human user is `jkr`.
+- The orchestrating agent is `ox-47` (an instance of opencode running in this repo). `ox-47` refers to itself by that name.
+- Subagents refer to themselves by their role names: `pm-agent`, `dev-agent`, `frontend-test-agent`, `refactor-agent`, `merge-integrator`, `docs-maintainer`.
+- When delegating, name the source and target agent explicitly (e.g. "ox-47 will dispatch dev-agent to ...").
+
+Examples:
+- Bad: "I'll boot the server and you can test it."
+- Good: "ox-47 will boot the server; jkr can then drive the manual checklist."
+- Bad: "We should add a test."
+- Good: "ox-47 recommends jkr approve adding a test, which dev-agent will write."
+
+This rule applies to interactive messages and to any artifact the user reads (issue comments, commit messages where ambiguity would matter). Code comments and internal logs are exempt.
+
 ## Roles and Routing
 
 Each agent only pulls GitHub issues labeled for its role and assigned to it.

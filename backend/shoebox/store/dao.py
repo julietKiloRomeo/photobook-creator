@@ -315,6 +315,10 @@ def update_theme(
         values.append(order_index)
     if not fields:
         return get_theme(conn, theme_id)
+    # Any user-initiated mutation counts as implicit adoption: the theme
+    # is no longer a disposable AI proposal and must survive subsequent
+    # processing runs. See B-1 in step-2 manual findings.
+    fields.append("ai_proposed = 0")
     values.append(theme_id)
     conn.execute(f"UPDATE themes SET {', '.join(fields)} WHERE id = ?", values)
     return get_theme(conn, theme_id)

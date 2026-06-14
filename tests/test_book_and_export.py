@@ -155,3 +155,64 @@ def test_export_with_no_book_still_works(client: TestClient) -> None:
         book = json.loads(zf.read("book.json"))
         assert book["themes"] == []
         assert book["assets"] == []
+
+
+def test_adding_text_blocks_in_sequence_preserves_order(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    """Regression for B-2 (step-2 manual finding).
+
+    jkr added two text blocks to a page. The first one was invisible; the
+    second click made the first appear. The bug is partly UI (hard-coded
+    slot grid) and partly contract: backend must accept any number of
+    text items on a page, and ``list_page_items`` must return them in
+    creation order so the UI can render them all.
+    """
+    project_id = _project_with_processed_photos(client, fixture_pack_dir)
+    client.post(f"/api/projects/{project_id}/book/auto-build")
+
+    themes = client.get(f"/api/projects/{project_id}/themes").json()
+    assert themes
+    pages = client.get(f"/api/themes/{themes[0]['id']}/pages").json()
+    assert pages
+    page_id = pages[0]["id"]
+
+    existing = client.get(f"/api/pages/{page_id}/items").json()
+    next_slot = max((it["slot_index"] for it in existing), default=-1) + 1
+
+    first = client.post(
+        f"/api/pages/{page_id}/items",
+        json={"kind": "text", "slot_index": next_slot, "text_content": "First note"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        f"/api/pages/{page_id}/items",
+        json={"kind": "text", "slot_index": next_slot + 1, "text_content": "Second note"},
+    )
+    assert second.status_code == 201
+
+    all_items = client.get(f"/api/pages/{page_id}/items").json()
+    text_items = [it for it in all_items if it["kind"] == "text"]
+    assert [t["text_content"] for t in text_items] == ["First note", "Second note"], (
+        f"Text items out of order or missing: {text_items}"
+    )
+
+
+def test_export_endpoint_supports_get_for_native_download_link(
+    client: TestClient,
+) -> None:
+    """Regression for B-3 (step-2 manual finding).
+
+    The frontend offers export as a plain ``<a href download>`` link so
+    the browser handles the download natively. That issues a GET, so the
+    endpoint must accept GET and return a ZIP. Previously this returned
+    405 Method Not Allowed.
+    """
+    project = client.post("/api/projects", json={"name": "Download"}).json()
+    response = client.get(f"/api/projects/{project['id']}/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "attachment" in response.headers["content-disposition"].lower()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+        assert "book.json" in zf.namelist()

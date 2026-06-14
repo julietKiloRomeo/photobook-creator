@@ -20,8 +20,18 @@ def auto_build_project_book(project_id: str) -> dict:
     return auto_build(project_id)
 
 
-@router.post("/api/projects/{project_id}/export")
+@router.api_route(
+    "/api/projects/{project_id}/export",
+    methods=["GET", "POST"],
+)
 def export_project(project_id: str) -> Response:
+    """Export the project as a ZIP.
+
+    Both GET and POST are accepted. GET supports a native ``<a download>``
+    link in the frontend so the browser handles the download with a
+    proper filename. POST is kept for programmatic callers and existing
+    tests. Export is a read of project state, so GET is semantically fine.
+    """
     try:
         payload, filename = build_export_bundle(project_id)
     except ValueError as exc:

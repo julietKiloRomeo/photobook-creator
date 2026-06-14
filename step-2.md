@@ -124,7 +124,25 @@ When you find anything that's off, add it under the **Manual-test findings** sec
 
 (Populate this as you go. Format: severity tag + short description.)
 
-- [ ] _(blocker / annoyance / polish)_ ...
+Captured from jkr's first pass on <http://127.0.0.1:5173/>:
+
+### Upload + processing
+- [ ] _(feature)_ **F-1** Upload must accept folders and traverse them recursively (drag-and-drop of a folder; `<input webkitdirectory>`).
+- [ ] _(feature)_ **F-2** Upload must accept many file formats. Currently HEIC fails on upload. Minimum: JPEG, PNG, HEIC/HEIF, WebP, GIF, TIFF; ideally also raw (CR2/NEF/ARW/DNG) deferred to a later milestone but rejected with a clear message, not a crash.
+- [ ] _(redesign)_ **R-1** Remove the separate "Process new photos" button. Processing is implied by upload. There is no user-facing reason to upload without processing. Backend can still run processing as a background task; the UI just shows progress inline with upload.
+- [ ] _(polish)_ **P-1** Overall UX feels generic. Wants a smoother, more deliberate flow — to be specified in a follow-up brainstorm pass before redesign.
+
+### Themes
+- [x] _(blocker)_ **B-1** A theme added *before* uploading photos disappears after the first upload+process cycle. Either auto-proposal is wiping user-created themes, or the user theme was created against a different project/session. Needs a regression test: "theme created pre-upload survives upload+process". *Fixed in sub-step 2.1: pipeline now only deletes `ai_proposed` themes; user mutations on an auto theme implicitly adopt it. Regression tests: `test_user_created_theme_survives_processing`, `test_renamed_auto_theme_survives_reprocessing`.*
+- [ ] _(feature)_ **F-3** Drag-and-drop of stacks (or individual photos) from one theme to another. Today only the "select stack chip + Move selected stack here button" path works, which is clunky.
+
+### Book builder
+- [x] _(blocker)_ **B-2** "+ Text" appears to be off-by-one: after submitting the first text block nothing visible happens; submitting a second text block makes the *first* one appear. Likely a stale-state / missing reactive update after the prompt resolves, or a write to the previous index. Needs a regression test: "adding two text blocks in sequence shows both in order". *Fixed in sub-step 2.1: text blocks render in a dedicated `<ul>` with reactive Svelte declarations split from the 2x2 photo grid. Regression test: `frontend/e2e/regression-book-text.spec.ts`.*
+- [x] _(blocker)_ **B-3** "Export JSON ↓" returns **HTTP 405 Method Not Allowed**. Needs a regression test: "export endpoint returns a ZIP for a valid project". *Fixed in sub-step 2.1: export route accepts GET (idempotent read) in addition to POST. Regression test: `test_export_endpoint_supports_get_for_native_download_link`.*
+- [ ] _(polish)_ **P-2** The book builder mental model is not obvious to a first-time user (jkr couldn't tell what was supposed to happen). Needs UX work after B-2 is fixed; possibly an empty-state hint or a brief inline guide.
+
+### Cross-cutting
+- [ ] _(policy)_ Every item above with a B-/F-/R- tag must ship with an intent-level regression test (backend pytest where the bug is server-side; Playwright where the bug is purely UI) so jkr does not see the same issue twice.
 
 ---
 

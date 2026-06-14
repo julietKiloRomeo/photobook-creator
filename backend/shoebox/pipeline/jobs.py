@@ -45,16 +45,24 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
             full["references"] = [ref_by_id[rid] for rid in full["reference_ids"]]
             enriched.append(full)
 
+        # Only re-propose for stacks that are not already assigned to a
+        # surviving (user-owned) theme. See B-1 in step-2 manual findings.
+        existing = dao.list_themes(conn, project_id)
+        surviving_user_themes = [t for t in existing if not t["ai_proposed"]]
+        claimed_stack_ids: set[str] = set()
+        for theme in surviving_user_themes:
+            claimed_stack_ids.update(dao.list_stack_ids_for_theme(conn, theme["id"]))
+
+        unclaimed = [s for s in enriched if s["id"] not in claimed_stack_ids]
         proposals = propose_themes(
-            enriched,
+            unclaimed,
             theme_partition_hours=settings.theme_partition_hours,
         )
 
-        # Replace theme set: clear and reinsert. This is acceptable in M1
-        # (user hasn't renamed yet on first run); M2+ will preserve renames.
-        existing = dao.list_themes(conn, project_id)
+        # Drop only AI-proposed themes the user has not adopted.
         for theme in existing:
-            conn.execute("DELETE FROM themes WHERE id = ?", (theme["id"],))
+            if theme["ai_proposed"]:
+                conn.execute("DELETE FROM themes WHERE id = ?", (theme["id"],))
 
         for proposal in proposals:
             theme = dao.create_theme(
