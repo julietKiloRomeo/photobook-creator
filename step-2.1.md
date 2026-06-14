@@ -1,12 +1,17 @@
-# Step 2.1 — Wave A Bug Fixes (B-1, B-2, B-3) + Critique Loop
+# Step 2.1 — Wave A Bug Fixes (B-1, B-2, B-3) + Critique Loop (Completed)
 
-**Status when this file was written**: all three Wave A bug fixes are
-code-complete with passing tests. Pre-commit critique + final verification
-have NOT yet run. The working tree is dirty (no commits made). This file
-hands the work to a fresh session to finish.
+**Final status**: committed as `e80e158 Sub-step 2.1: Wave A bug fixes
+(B-1 themes, B-2 text blocks, B-3 export)` on `main`. All four
+verification gates green (41 pytest, ruff clean, svelte-check clean, 4/4
+Playwright on desktop + mobile). Not yet pushed.
 
-ox-47 (an instance of opencode) authored the patch. jkr is the human user.
-Both names are defined in `AGENTS.md` (no ambiguous pronouns rule).
+ox-47 (an instance of opencode) authored the patch and the self-critique
+log. jkr is the human user. Both names are defined in `AGENTS.md`
+(no ambiguous pronouns rule).
+
+The body below is the original handoff plus ox-47's self-critique
+findings (Step 2.1.1) and the post-commit notes. Kept for the record so
+future sessions can see what was checked and what was deferred.
 
 ---
 
@@ -93,9 +98,12 @@ re-run.
 
 ---
 
-## What's left
+## Work log
 
-### Step 2.1.1 — Self-critique loop (do this in the fresh session)
+All four sub-steps below are done. Section bodies are preserved as a
+record of what was checked, deferred, and committed.
+
+### Step 2.1.1 — Self-critique loop (planning brief) — done
 
 ox-47 should perform a structured self-review of the dirty working tree
 BEFORE final verification. Apply the same rigor as for production code.
@@ -165,7 +173,7 @@ fix them or note explicitly why they were deferred.
      annotations` where peers have it.
    - Svelte: matches the rest of the BookScreen idiom.
 
-### Step 2.1.1 — Self-critique findings (ox-47, 2026-06-14)
+### Step 2.1.1 — Self-critique findings (ox-47, 2026-06-14) — done
 
 ox-47 reviewed the dirty working tree against the six focus areas. Findings
 below; each item is tagged FIX (acted on now), DEFER (acknowledged, left
@@ -283,7 +291,29 @@ for a future sub-step), or OK (no action needed).
 All DEFER items are correctly out of scope for sub-step 2.1 (Wave A
 bug fixes only). ox-47 proceeds to final verification.
 
-### Step 2.1.2 — Final verification (run after self-critique loop is closed)
+### Step 2.1.2 — Final verification — done
+
+**Result**: all four gates green at commit time.
+
+- `uv run pytest -q` → 41 passed
+- `uv run ruff check .` → All checks passed
+- `cd frontend && npm run check` → 0 errors / 0 warnings
+- `cd frontend && SHOEBOX_E2E_BASE_URL=http://127.0.0.1:5174 npx playwright test` → 4/4 (desktop + mobile, happy-path + B-2 regression)
+
+Playwright was run against ox-47's audit stack on :5174 because jkr's
+manual-test stack still owned :5173 at the time of the run. Default
+managed `webServers` also work when the ports are free.
+
+**Note on trufflehog**: the secrets scan from AGENTS.md could not run
+because podman's overlay storage driver is incompatible with btrfs on
+the host (`overlay is not supported over btrfs`). ox-47 manually
+grep-scanned the diff for secret-like patterns and found none; jkr
+approved the commit. The podman host issue is unresolved and a
+future-session problem.
+
+---
+
+#### Original verification brief (kept for reference)
 
 All four must be green before commit:
 
@@ -307,12 +337,28 @@ cd frontend && npx playwright test && cd ..
 
 If anything is red, do NOT commit. Fix or document and stop.
 
-### Step 2.1.3 — Update `step-2.md` findings
+### Step 2.1.3 — Update `step-2.md` findings — done
+
+B-1, B-2, B-3 ticked in `step-2.md` "Manual-test findings" with one-line
+fix summaries and test references. F-/R-/P- items remain unchecked
+(Wave B, deferred).
+
+---
+
+#### Original brief (kept for reference)
 
 Mark B-1, B-2, B-3 as `[x]` in `step-2.md` "Manual-test findings". Leave
 the F-/R-/P- items unchecked — they are Wave B.
 
-### Step 2.1.4 — Commit (only if jkr confirms)
+### Step 2.1.4 — Commit — done
+
+Committed as `e80e158` on `main`. Not pushed.
+
+12 files changed (+736 / −46): 10 modified + `frontend/e2e/regression-book-text.spec.ts` + `step-2.1.md`. `data-audit/` left untracked (transient audit-stack data).
+
+---
+
+#### Original brief (kept for reference)
 
 ox-47 should NOT commit autonomously. Ask jkr first. Suggested message:
 
@@ -353,20 +399,22 @@ should NOT be needed now: the managed webServers in
 
 ---
 
-## Reference: files changed in the previous session
+## Reference: files in commit `e80e158`
 
 ```
-AGENTS.md                             | 17 +++++++
-backend/shoebox/api/book.py           | 12 ++++-
-backend/shoebox/pipeline/jobs.py      | 18 +++++--
-backend/shoebox/store/dao.py          |  4 ++
-frontend/playwright.config.ts         | 48 ++++++++++--------
-frontend/src/routes/BookScreen.svelte | 91 +++++++++++++++++++++++++++-------
-frontend/vite.config.ts               |  2 +-
-step-2.md                             | 20 +++++++-
-tests/test_book_and_export.py         | 61 +++++++++++++++++++++++
-tests/test_processing_flow.py         | 63 ++++++++++++++++++++++++
-10 files changed, 290 insertions(+), 46 deletions(-)
+AGENTS.md                                   |  17 +
+backend/shoebox/api/book.py                 |  12 +-
+backend/shoebox/pipeline/jobs.py            |  18 +-
+backend/shoebox/store/dao.py                |   4 +
+frontend/e2e/regression-book-text.spec.ts   |  74 +++++ (new)
+frontend/playwright.config.ts               |  48 ++-
+frontend/src/routes/BookScreen.svelte       |  91 +++-
+frontend/vite.config.ts                     |   2 +-
+step-2.1.md                                 | 418 +++ (new — this file)
+step-2.md                                   |  20 +-
+tests/test_book_and_export.py               |  61 +++
+tests/test_processing_flow.py               |  63 +++
+12 files changed, +736 / -46
 ```
 
-Untracked: `data-audit/`, `frontend/e2e/regression-book-text.spec.ts`.
+`data-audit/` deliberately left untracked (transient audit-stack data).

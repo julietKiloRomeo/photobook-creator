@@ -10,13 +10,86 @@ This file is the handoff for a fresh session. Read this top-to-bottom and you'll
 
 ## Where we left off
 
+*The state below is from when this file was first written, at the start
+of step-2. For the current state (after sub-step 2.1), jump to
+"Where to resume" below.*
+
 - M1 vertical slice is **code-complete and all-green** (see `step-1.md` marked "(Completed)").
 - 37 backend pytest tests, ruff clean, svelte-check clean, 2 Playwright tests (desktop Chromium + Pixel 5 mobile) all pass.
 - Bundle: 51 kB JS / 20 kB CSS uncompressed.
 - Git log on `main` ends at `73572e9 Sub-step 1.10: E2E test + polish; mark step-1 complete`.
 - v1 implementation is archived verbatim under `archive/v1/`. v1 tests are NOT inherited (see test policy in `step-1.md` and the archive notes).
 
-**What has not happened yet**: a human has not opened the app in a browser. The Playwright E2E covers the happy path mechanically, but no real eyes have judged the calm/feel/aesthetic. That's the first task in this step.
+**What had not happened yet at the time**: a human had not opened the app in a browser. The Playwright E2E covers the happy path mechanically, but no real eyes have judged the calm/feel/aesthetic. That was the first task in this step — sub-step 2.0, now done.
+
+---
+
+## Where to resume (read this first in a fresh session)
+
+`step-2.md` is the umbrella for sub-steps 2.0 → 2.8. So far:
+
+- **2.0 Manual test pass** — done (jkr drove it, 8 findings logged below).
+- **2.1 Wave A bug fixes** — done. B-1/B-2/B-3 fixed and committed
+  (`e80e158`). Full record + self-critique deferrals are in
+  `step-2.1.md`.
+- **Everything else** — pending.
+
+`git log --oneline` ends at:
+
+```
+e80e158 Sub-step 2.1: Wave A bug fixes (B-1 themes, B-2 text blocks, B-3 export)
+8373512 Add step-2.md: manual test gate + M2 multi-user plan
+73572e9 Sub-step 1.10: E2E test + polish; mark step-1 complete
+```
+
+Not pushed yet. Branch is ahead of `origin/main` by 12 commits.
+
+### Two work streams compete for the next sub-step
+
+1. **Sub-step 2.1.b — Wave B (manual-test findings F-/R-/P-)**.
+   Brainstorming pass first (see `brainstorming` superpower skill), then
+   code. Items: F-1 folder uploads, F-2 HEIC and other formats, F-3
+   drag-drop stacks between themes, R-1 remove the explicit Process
+   button, P-1 overall UX redesign, P-2 book builder mental model.
+   Best done before more multi-user code lands, because each touches UI
+   surfaces M2 also touches (upload toolbar, themes, book).
+2. **Sub-step 2.2 — M2 auth scaffolding**. The plan below (`SHOEBOX_SECRET_KEY`,
+   signed cookies, schema additions, etc.) is unchanged from when this
+   file was first written. No work has started.
+
+ox-47's recommendation: **do 2.1.b first** — running a brainstorming
+pass with jkr while the UX context is fresh is cheaper than retrofitting
+multi-user changes later. But this is jkr's call.
+
+### Deferred technical items captured in `step-2.1.md` self-critique
+
+These are NOT in the F-/R-/P- list above; they came out of ox-47's
+self-review and belong to later milestones:
+
+- **M3 candidate**: reprocessing wipes stack→user-theme assignments via
+  the `replace_stacks` cascade. The user theme entity survives, but its
+  stack memberships do not. `dao.replace_stacks` already calls this out
+  as M3 work. File an issue when the M3 milestone opens.
+- **Polish** (any time): theme name dedup (no UNIQUE on `(project_id, name)`),
+  hardcoded `slot_index = 100` magic number in `BookScreen.svelte`, two
+  dead CSS rules around `.remove` in `BookScreen.svelte:425-426`,
+  `themePhotos()` not strictly reactive within a single picker open.
+
+### Environment caveats picked up during 2.1
+
+- **Trufflehog scan can't run via podman on this host**: btrfs root +
+  overlay storage driver mismatch. Sub-step 2.1 was committed with a
+  manual diff-grep instead. Pre-commit secrets scan needs either a
+  podman storage-driver fix (`~/.config/containers/storage.conf` →
+  `driver = "vfs"`) or a native trufflehog install before the next
+  commit. AGENTS.md still mandates the scan.
+- **ox-47's audit stack on :8001 / :5174** may still be running from
+  the 2.1 Playwright run. Safe to leave or kill. `data-audit/` is
+  untracked and not in `.gitignore`; either add to gitignore or delete
+  the directory when the audit backend is stopped.
+- **Playwright env-var escape hatches** (`SHOEBOX_E2E_BASE_URL`,
+  `VITE_API_TARGET`) were added in 2.1 and proved useful — keep them
+  in mind when running E2E against a non-default port.
 
 ---
 
@@ -237,8 +310,9 @@ The `members` and `votes` tables already exist in the M1 schema. Additions neede
 
 The manual test gate goes first; everything else is contingent on it.
 
-- **2.0** — Manual test pass (this file's checklist above). Outcomes captured under "Manual-test findings". (You drive; no code unless something breaks.)
-- **2.1** — Address any blocker/annoyance findings from 2.0.
+- **2.0** — Manual test pass (this file's checklist above). Outcomes captured under "Manual-test findings". (You drive; no code unless something breaks.) **(Completed)** — jkr drove the pass; 8 findings captured (B-1/2/3, F-1/2/3, R-1, P-1/2).
+- **2.1** — Address any blocker/annoyance findings from 2.0. **(Completed — Wave A only)** — B-1, B-2, B-3 fixed in commit `e80e158`. Self-critique log + deferrals live in `step-2.1.md`. Wave B (F-/R-/P-) deferred to 2.1.b (see "Where to resume" below).
+- **2.1.b** — *(new, not started)* Wave B: F-1 folder uploads, F-2 broader file format support (HEIC etc.), F-3 drag-drop stacks between themes, R-1 remove the explicit "Process new photos" button, P-1 overall UX brainstorm, P-2 book builder mental model. Per the original manual-test triage, a brainstorming pass should happen before code (`brainstorming` superpower skill is available).
 - **2.2** — Auth scaffolding: `SHOEBOX_SECRET_KEY` plumbing, signed-cookie helper, `members` + `presence` schema additions, `share_token` and `default_join_role` on `projects`.
 - **2.3** — Join flow: `/api/join/...` endpoints + `/join/<token>` frontend route. Owner auto-created on project creation.
 - **2.4** — Role enforcement: dependency on every mutating endpoint, with intent tests for each role boundary.
@@ -256,7 +330,7 @@ Each sub-step ends with a focused commit and a passing test suite.
 | Command | What it does |
 | --- | --- |
 | `./scripts/dev.sh` | Backend + frontend dev servers with `/api` proxied |
-| `uv run pytest -q` | Backend test suite (37 tests, ~10s) |
+| `uv run pytest -q` | Backend test suite (41 tests after sub-step 2.1, ~10s) |
 | `uv run ruff check .` | Lint |
 | `cd frontend && npm run check` | svelte-check (TS/Svelte types) |
 | `cd frontend && npm run build` | Production frontend build (`dist/`) |
