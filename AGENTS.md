@@ -32,8 +32,10 @@ Each agent only pulls GitHub issues labeled for its role and assigned to it.
 
 ## Subagents
 
-- Project subagent registration lives in `.codex/config.toml`.
-- Subagent definitions live in `.codex/agents/*.toml` with per-role instruction files in `.codex/agents/*.md`.
+- Project subagent registration lives in `.codex/config.toml` (Codex) and `opencode.json` (opencode).
+- Role prompts live canonically in `.codex/agents/*.md`. Both runtimes reference these files so behavior stays identical.
+- Codex wires each role through `.codex/agents/*.toml` (`model_instructions_file`). Opencode wires each role through `opencode.json` (`prompt: "{file:.codex/agents/<role>.md}"`).
+- When a role prompt changes, edit `.codex/agents/<role>.md` and both runtimes pick it up.
 - Role names:
   - `pm-agent`
   - `dev-agent`

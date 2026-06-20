@@ -1,0 +1,65 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "pm-agent": {
+      "description": "Use when triaging GitHub issues, assigning role labels, decomposing vague requests, and coordinating delegated worktrees.",
+      "mode": "subagent",
+      "prompt": "{file:.codex/agents/pm-agent.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "ask",
+        "webfetch": "allow",
+        "task": "allow"
+      }
+    },
+    "dev-agent": {
+      "description": "Use when implementing an approved GitHub issue in a delegated worktree.",
+      "mode": "subagent",
+      "prompt": "{file:.codex/agents/dev-agent.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "deny"
+      }
+    },
+    "frontend-test-agent": {
+      "description": "Use when running frontend tests, capturing screenshots, or posting validation reports to a GitHub issue.",
+      "mode": "subagent",
+      "prompt": "{file:.codex/agents/frontend-test-agent.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "allow",
+        "webfetch": "allow"
+      }
+    },
+    "refactor-agent": {
+      "description": "Use when simplifying architecture, docs, or tests with fail-fast and low-complexity refactors.",
+      "mode": "subagent",
+      "prompt": "{file:.codex/agents/refactor-agent.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": "deny"
+      }
+    },
+    "merge-integrator": {
+      "description": "Use when validating a delegated branch, squash-merging it to main, and cleaning up its worktree.",
+      "mode": "subagent",
+      "prompt": "{file:.codex/agents/merge-integrator.md}",
+      "permission": {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "allow"
+      }
+    },
+    "docs-maintainer": {
+      "description": "Use when updating README, AGENTS.md, or policy docs to match implemented behavior.",
+      "mode": "subagent",
+      "prompt": "{file:.codex/agents/docs-maintainer.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "ask"
+      }
+    }
+  }
+}
