@@ -101,8 +101,17 @@ Before any commit or push, run these checks from the repo root.
 ## 1) Secrets scan (trufflehog via podman)
 
 ```bash
-podman run --rm -v "$PWD:/repo" -v "$PWD/.trufflehog:/tmp" docker.io/trufflesecurity/trufflehog:latest filesystem /repo
+podman run --rm --network=none \
+  -v "$PWD:/repo" \
+  -v "$PWD/.trufflehog:/tmp" \
+  docker.io/trufflesecurity/trufflehog:latest \
+  filesystem --exclude-paths=/tmp/exclude.txt /repo
 ```
+
+Notes:
+- `--network=none` avoids rootless networking setup (no `/dev/net/tun` needed) and disables verification probes, which is intended for a pre-commit gate.
+- Exclude patterns live in `.trufflehog/exclude.txt` (tracked) and skip `.venv/`, build dirs, generated data, etc.
+- If podman complains about overlayfs on btrfs, ensure `~/.config/containers/storage.conf` selects `driver = "btrfs"`.
 
 ## 2) Tests
 

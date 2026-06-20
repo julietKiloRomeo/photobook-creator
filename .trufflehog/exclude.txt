@@ -1,0 +1,17 @@
+/\.venv/
+/\.worktrees/
+/node_modules/
+/data/
+/\.photobook-data/
+/\.photobook-temp/
+/photobook-output/
+/\.cache/
+/\.pytest_cache/
+/\.trufflehog/
+/playwright-report/
+/test-results/
+/\.svelte-kit/
+/\.e2e-data/
+/dist/
+/__pycache__/
+\.pyc$
