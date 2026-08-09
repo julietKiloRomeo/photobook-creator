@@ -142,6 +142,9 @@ def cluster_stacks(
 class ProposedTheme:
     name: str
     stack_ids: list[str]
+    #: Earliest capture time in the group, or ``None`` if nothing in it
+    #: carries a timestamp. Callers use it for date-based naming.
+    started_at: datetime | None = None
 
 
 def propose_themes(
@@ -190,7 +193,15 @@ def propose_themes(
         if st is not None:
             last_time = st
 
+    def _group_start(group: list[dict]) -> datetime | None:
+        times = [t for t in (_stack_time(s) for s in group) if t is not None]
+        return min(times) if times else None
+
     return [
-        ProposedTheme(name=namer(i), stack_ids=[s["id"] for s in group])
+        ProposedTheme(
+            name=namer(i),
+            stack_ids=[s["id"] for s in group],
+            started_at=_group_start(group),
+        )
         for i, group in enumerate(themes)
     ]

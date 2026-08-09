@@ -49,10 +49,32 @@ def test_tier_one_decodes_heic(tmp_path: Path) -> None:
     assert (tmp_path / "medium" / f"{result.file_hash}.jpg").is_file()
 
 
-def test_tier_one_classifies_truncated_heic_as_decode_error(tmp_path: Path) -> None:
+def test_tier_one_salvages_a_truncated_file(tmp_path: Path) -> None:
+    """A photo missing its last bytes is still a photo.
+
+    Phone cameras and cloud-sync clients routinely truncate the final
+    MCU rows. Pillow refuses those by default, which silently dropped
+    usable family photos on upload. Decoding what is there wins.
+    """
     source = tmp_path / "truncated.heic"
     from_pillow(Image.new("RGB", (48, 32), "#845ec2")).save(source, quality=90)
     source.write_bytes(source.read_bytes()[:-20])
+
+    result = ingest_file(
+        source_path=source,
+        thumbs_dir=tmp_path / "thumbs",
+        medium_dir=tmp_path / "medium",
+        thumb_small_width=24,
+        thumb_medium_width=40,
+    )
+
+    assert (result.width, result.height) == (48, 32)
+    assert (tmp_path / "thumbs" / f"{result.file_hash}.jpg").is_file()
+
+
+def test_tier_one_still_rejects_a_file_that_is_not_an_image(tmp_path: Path) -> None:
+    source = tmp_path / "notreally.jpg"
+    source.write_bytes(b"this is not a JPEG, not even slightly")
 
     with pytest.raises(ImageDecodeError):
         ingest_file(
@@ -226,11 +248,18 @@ def test_rejected_only_upload_does_not_enqueue_processing(
     assert enqueue_calls == []
 
 
-def test_failing_exif_metadata_rejects_one_file_and_processes_later_photo(
+def test_failing_exif_metadata_keeps_the_photo_and_processes_the_batch(
     client: TestClient,
     fixture_pack_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Unreadable EXIF must not cost the owner the photo.
+
+    EXIF is best-effort metadata. Dropping a decodable image because its
+    timestamp block is malformed loses a memory to fix a nice-to-have;
+    the photo is kept with a null ``captured_at`` instead and the
+    failure is logged.
+    """
     project = _create_project(client)
     photos = [
         fixture_pack_dir / "vacation_01.jpg",
@@ -263,11 +292,11 @@ def test_failing_exif_metadata_rejects_one_file_and_processes_later_photo(
     )
 
     assert response.status_code == 201
-    assert response.json()["accepted"] == 1
-    assert response.json()["rejected"] == [
-        {"filename": photos[0].name, "reason": "file could not be decoded"}
-    ]
-    assert response.json()["job_id"] == "j_metadata"
+    body = response.json()
+    assert body["accepted"] == 2, "the EXIF-failing photo should be kept, not dropped"
+    assert body["rejected"] == []
+    assert all(r["captured_at"] is None for r in body["references"])
+    assert body["job_id"] == "j_metadata"
     assert enqueue_calls == [(project["id"], "process")]
 
 

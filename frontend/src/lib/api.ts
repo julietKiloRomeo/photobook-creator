@@ -201,11 +201,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ name }),
     }),
+  deleteTheme: (themeId: string) =>
+    request<void>(`/api/themes/${themeId}`, { method: "DELETE" }),
   assignStack: (themeId: string, stackId: string) =>
     request<void>(`/api/themes/${themeId}/assign`, {
       method: "POST",
       body: JSON.stringify({ stack_id: stackId }),
     }),
+  unassignStack: (themeId: string, stackId: string) =>
+    request<void>(`/api/themes/${themeId}/stacks/${stackId}`, { method: "DELETE" }),
   listThemeStacks: (themeId: string) =>
     request<string[]>(`/api/themes/${themeId}/stacks`),
 
@@ -216,6 +220,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  deletePage: (pageId: string) =>
+    request<void>(`/api/pages/${pageId}`, { method: "DELETE" }),
   listPageItems: (pageId: string) =>
     request<PageItem[]>(`/api/pages/${pageId}/items`),
   addPageItem: (pageId: string, item: {

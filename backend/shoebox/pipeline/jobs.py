@@ -2,17 +2,49 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime
+
 from shoebox.config import get_settings
 from shoebox.jobs import JobReporter
-from shoebox.pipeline.tier2 import cluster_stacks, propose_themes
+from shoebox.pipeline.tier2 import ProposedTheme, cluster_stacks, propose_themes
 from shoebox.store import connection, dao
+
+log = logging.getLogger(__name__)
+
+
+def _theme_base_name(proposal: ProposedTheme) -> str:
+    """Name a proposal after the day it happened.
+
+    Date names beat ``Day 1``/``Day 2``: they do not renumber every time
+    a photo lands in an earlier gap, so a name the owner is looking at
+    keeps meaning the same thing across runs.
+    """
+    started: datetime | None = proposal.started_at
+    if started is None:
+        return "Undated photos"
+    return f"{started:%b} {started.day}, {started.year}"
+
+
+def _free_name(base: str, taken: set[str]) -> str:
+    name = base
+    suffix = 2
+    while name in taken:
+        name = f"{base} ({suffix})"
+        suffix += 1
+    return name
 
 
 def process_project(project_id: str, reporter: JobReporter) -> None:
     """Recompute stacks and themes for a project from current references.
 
-    This is intentionally idempotent: replays produce the same shape
-    (modulo new uploads in between).
+    Two invariants make this safe to re-run after every upload:
+
+    1. Stack identity survives (``dao.sync_stacks``), so theme
+       assignments and best-shot picks are not cascaded away.
+    2. Theme proposal is *additive*: a stack that already belongs to a
+       theme is never touched. Only stacks nothing owns get grouped into
+       fresh proposals.
     """
     settings = get_settings()
     reporter.progress(0.05, "Loading references")
@@ -21,6 +53,7 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
         references = dao.list_references(conn, project_id)
 
     if not references:
+        log.info("Project %s has no references to process", project_id)
         reporter.progress(1.0, "No photos to process")
         return
 
@@ -32,10 +65,9 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
 
     reporter.progress(0.5, "Saving stacks")
     with connection() as conn:
-        stacks = dao.replace_stacks(conn, project_id, groups)
+        stacks = dao.sync_stacks(conn, project_id, groups)
 
     reporter.progress(0.7, "Proposing themes")
-    # Re-fetch stacks with reference lists for the theme proposer.
     with connection() as conn:
         ref_by_id = {r["id"]: r for r in dao.list_references(conn, project_id)}
         enriched = []
@@ -45,33 +77,55 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
             full["references"] = [ref_by_id[rid] for rid in full["reference_ids"]]
             enriched.append(full)
 
-        # Only re-propose for stacks that are not already assigned to a
-        # surviving (user-owned) theme. See B-1 in step-2 manual findings.
-        existing = dao.list_themes(conn, project_id)
-        surviving_user_themes = [t for t in existing if not t["ai_proposed"]]
-        claimed_stack_ids: set[str] = set()
-        for theme in surviving_user_themes:
-            claimed_stack_ids.update(dao.list_stack_ids_for_theme(conn, theme["id"]))
+        # Anything the owner (or a previous run) already filed stays put.
+        assigned = dao.list_assigned_stack_ids(conn, project_id)
+        unassigned = [s for s in enriched if s["id"] not in assigned]
 
-        unclaimed = [s for s in enriched if s["id"] not in claimed_stack_ids]
+        # Retire AI proposals that ended up empty; they carry no meaning
+        # and would otherwise pile up as clutter.
+        for theme in dao.list_themes(conn, project_id):
+            if theme["ai_proposed"] and not dao.list_stack_ids_for_theme(conn, theme["id"]):
+                dao.delete_theme(conn, theme["id"])
+
+        # A surviving AI theme for the same day absorbs the new stacks
+        # rather than spawning "Aug 9, 2026 (2)" beside it. Owner-named
+        # themes are off limits, so their names are merely reserved.
+        remaining = dao.list_themes(conn, project_id)
+        mergeable = {t["name"]: t["id"] for t in remaining if t["ai_proposed"]}
+        reserved = {t["name"] for t in remaining if not t["ai_proposed"]}
+
         proposals = propose_themes(
-            unclaimed,
+            unassigned,
             theme_partition_hours=settings.theme_partition_hours,
         )
 
-        # Drop only AI-proposed themes the user has not adopted.
-        for theme in existing:
-            if theme["ai_proposed"]:
-                conn.execute("DELETE FROM themes WHERE id = ?", (theme["id"],))
-
         for proposal in proposals:
-            theme = dao.create_theme(
-                conn,
-                project_id=project_id,
-                name=proposal.name,
-                ai_proposed=True,
-            )
+            base = _theme_base_name(proposal)
+            theme_id = mergeable.get(base)
+            if theme_id is None:
+                name = _free_name(base, reserved | set(mergeable))
+                theme_id = dao.create_theme(
+                    conn,
+                    project_id=project_id,
+                    name=name,
+                    ai_proposed=True,
+                )["id"]
+                mergeable[name] = theme_id
             for stack_id in proposal.stack_ids:
-                dao.assign_stack_to_theme(conn, stack_id=stack_id, theme_id=theme["id"])
+                dao.assign_stack_to_theme(
+                    conn,
+                    stack_id=stack_id,
+                    theme_id=theme_id,
+                    adopt=False,
+                )
 
+    log.info(
+        "Processed project %s: %d references, %d stacks, %d new theme(s) for %d "
+        "unassigned stack(s)",
+        project_id,
+        len(references),
+        len(stacks),
+        len(proposals),
+        len(unassigned),
+    )
     reporter.progress(1.0, "Done")

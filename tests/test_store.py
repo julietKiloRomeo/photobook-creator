@@ -210,7 +210,7 @@ def test_jobs_track_progress_and_completion(conn) -> None:
     assert done["finished_at"] is not None
 
 
-def test_replace_stacks_swaps_in_a_new_grouping(conn) -> None:
+def test_sync_stacks_swaps_in_a_new_grouping(conn) -> None:
     project = dao.create_project(conn, name="Recluster")
     refs = [
         dao.upsert_reference(
@@ -223,11 +223,85 @@ def test_replace_stacks_swaps_in_a_new_grouping(conn) -> None:
         dao.create_stack(conn, project_id=project["id"], reference_ids=[ref_id])
     assert len(dao.list_stacks(conn, project["id"])) == 4
 
-    dao.replace_stacks(conn, project["id"], [refs[:2], refs[2:]])
+    dao.sync_stacks(conn, project["id"], [refs[:2], refs[2:]])
     after = dao.list_stacks(conn, project["id"])
     assert len(after) == 2
     sizes = sorted(len(s["reference_ids"]) for s in after)
     assert sizes == [2, 2]
+
+
+def test_sync_stacks_keeps_stack_identity_and_theme_assignment(conn) -> None:
+    """The regression behind "my themes get shuffled when I add photos".
+
+    Recreating stacks cascaded ``stack_themes`` away, so every curated
+    assignment was lost on the next upload. Overlapping groups must
+    reuse the existing stack id.
+    """
+    project = dao.create_project(conn, name="Stable")
+    refs = [
+        dao.upsert_reference(
+            conn, project_id=project["id"], original_path=f"/{i}.jpg", file_hash=f"h{i}"
+        )["id"]
+        for i in range(3)
+    ]
+    stack = dao.create_stack(conn, project_id=project["id"], reference_ids=refs[:2])
+    theme = dao.create_theme(conn, project_id=project["id"], name="Beach Day")
+    dao.assign_stack_to_theme(conn, stack_id=stack["id"], theme_id=theme["id"])
+
+    # A new photo joins the group; the stack must survive as itself.
+    synced = dao.sync_stacks(conn, project["id"], [refs])
+
+    assert [s["id"] for s in synced] == [stack["id"]]
+    assert dao.list_stack_ids_for_theme(conn, theme["id"]) == [stack["id"]]
+
+
+def test_sync_stacks_clears_a_pick_that_left_the_stack(conn) -> None:
+    project = dao.create_project(conn, name="Repick")
+    refs = [
+        dao.upsert_reference(
+            conn, project_id=project["id"], original_path=f"/{i}.jpg", file_hash=f"h{i}"
+        )["id"]
+        for i in range(3)
+    ]
+    stack = dao.create_stack(conn, project_id=project["id"], reference_ids=refs)
+    dao.update_stack(conn, stack["id"], picked_reference_id=refs[2], status="resolved")
+
+    dao.sync_stacks(conn, project["id"], [refs[:2], refs[2:]])
+
+    kept = dao.get_stack(conn, stack["id"])
+    assert kept is not None
+    assert sorted(kept["reference_ids"]) == sorted(refs[:2])
+    assert kept["picked_reference_id"] is None
+    assert kept["status"] == "pending"
+
+
+def test_deleting_a_theme_leaves_its_stacks_alive(conn) -> None:
+    project = dao.create_project(conn, name="Delete theme")
+    ref = dao.upsert_reference(
+        conn, project_id=project["id"], original_path="/d.jpg", file_hash="d"
+    )
+    stack = dao.create_stack(conn, project_id=project["id"], reference_ids=[ref["id"]])
+    theme = dao.create_theme(conn, project_id=project["id"], name="Doomed")
+    dao.assign_stack_to_theme(conn, stack_id=stack["id"], theme_id=theme["id"])
+    dao.create_page(conn, theme_id=theme["id"])
+
+    assert dao.delete_theme(conn, theme["id"]) is True
+
+    assert dao.get_theme(conn, theme["id"]) is None
+    assert dao.get_stack(conn, stack["id"]) is not None
+    assert dao.list_assigned_stack_ids(conn, project["id"]) == set()
+
+
+def test_deleting_a_page_closes_the_order_gap(conn) -> None:
+    project = dao.create_project(conn, name="Delete page")
+    theme = dao.create_theme(conn, project_id=project["id"], name="Pages")
+    pages = [dao.create_page(conn, theme_id=theme["id"]) for _ in range(3)]
+
+    assert dao.delete_page(conn, pages[0]["id"]) is True
+
+    remaining = dao.list_pages(conn, theme["id"])
+    assert [p["id"] for p in remaining] == [pages[1]["id"], pages[2]["id"]]
+    assert [p["order_index"] for p in remaining] == [0, 1]
 
 
 def test_deleting_a_project_cascades_to_its_data(conn) -> None:

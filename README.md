@@ -28,6 +28,13 @@ Everything in the product is built around three nouns:
 2. **Themes** — groups of stacks telling a story (e.g. "Beach day").
 3. **Book** — pages per theme with photos and text in layouts.
 
+Curation is durable: adding more photos later re-runs clustering but never
+moves a stack you already filed. Reprocessing only proposes themes for
+stacks that belong to no theme yet. Stacks move between themes by drag and
+drop (pointer) or tap-then-pick (touch), and both themes and pages can be
+deleted — deleting a theme returns its stacks to **Unassigned** rather
+than discarding photos.
+
 Duel (rapid 1:1 picking) and Timeline (chronological overview) are tools that serve the three concepts, not top-level navigation.
 
 ## Architecture (M1)
@@ -36,6 +43,16 @@ Duel (rapid 1:1 picking) and Timeline (chronological overview) are tools that se
 - **Frontend**: Svelte + Vite + TypeScript. Mobile-first responsive. Hash routing. ~20 kB gzipped bundle.
 - **Storage**: full-resolution originals plus multi-tier derivatives under `data/projects/<id>/{originals,thumbs,medium}`.
 - **Export**: ZIP with `book.json` (schema_version=1) + `assets/<sha256>.<ext>` originals.
+- **Logging**: stderr plus a rotating file at `data/logs/shoebox.log`. Upload rejections, job failures and unhandled request errors are all logged with their underlying cause. The HTTP response keeps only a coarse rejection reason, because decoder errors can echo raw file bytes back to the client. Tune with `SHOEBOX_LOG_LEVEL` (default `INFO`) and `SHOEBOX_LOG_TO_FILE`.
+
+### Why was my photo skipped?
+
+Check `data/logs/shoebox.log` — each rejection is logged with the filename
+and the concrete cause. Extensions are matched case-insensitively, so
+`.jpg`, `.JPG`, `.jpeg` and `.JPEG` are all accepted. Files truncated by a
+phone or a sync client are decoded as far as they go rather than dropped,
+and unreadable EXIF costs the photo its timestamp, not its place in the
+project.
 
 ## Decisions locked in
 

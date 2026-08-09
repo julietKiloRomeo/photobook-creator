@@ -283,21 +283,95 @@ def update_stack(
     return get_stack(conn, stack_id)
 
 
-def replace_stacks(
+def _rewrite_stack_members(
+    conn: sqlite3.Connection,
+    stack_id: str,
+    reference_ids: list[str],
+) -> dict[str, Any]:
+    """Point an existing stack at a new reference set, keeping its id."""
+    conn.execute("DELETE FROM stack_references WHERE stack_id = ?", (stack_id,))
+    conn.executemany(
+        "INSERT INTO stack_references (stack_id, reference_id) VALUES (?, ?)",
+        [(stack_id, ref_id) for ref_id in reference_ids],
+    )
+    row = conn.execute(
+        "SELECT picked_reference_id, status FROM stacks WHERE id = ?", (stack_id,)
+    ).fetchone()
+    picked = row["picked_reference_id"]
+    status = row["status"]
+    if picked is not None and picked not in reference_ids:
+        # The owner's pick left this stack; the stack needs a new decision.
+        picked = None
+        if status == "resolved":
+            status = "pending"
+    if len(reference_ids) == 1 and picked is None:
+        picked = reference_ids[0]
+        status = "resolved"
+    conn.execute(
+        "UPDATE stacks SET picked_reference_id = ?, status = ? WHERE id = ?",
+        (picked, status, stack_id),
+    )
+    fetched = get_stack(conn, stack_id)
+    assert fetched is not None
+    return fetched
+
+
+def sync_stacks(
     conn: sqlite3.Connection,
     project_id: str,
     groups: list[list[str]],
 ) -> list[dict[str, Any]]:
-    """Replace the stack set for a project. Used by the tier-2 pipeline.
+    """Reconcile the stack set with a freshly computed grouping.
 
-    Any owner-confirmed picks for stacks that map to a new stack would
-    be lost here; preserving them is M3 work, not M1.
+    Stack *identity* is preserved wherever a new group overlaps an
+    existing stack, because a stack id is what ``stack_themes`` and the
+    owner's best-shot pick hang off. Wiping and recreating stacks (the
+    old ``replace_stacks``) cascaded every theme assignment away, so
+    adding one photo to a project scattered curated themes.
+
+    Matching is greedy by reference-id overlap, one existing stack to at
+    most one new group. Groups with no overlap become new stacks;
+    existing stacks nothing matched are deleted.
     """
-    conn.execute("DELETE FROM stacks WHERE project_id = ?", (project_id,))
-    return [
-        create_stack(conn, project_id=project_id, reference_ids=group)
-        for group in groups
-    ]
+    existing = list_stacks(conn, project_id)
+    owner_of_reference: dict[str, str] = {}
+    for stack in existing:
+        for ref_id in stack["reference_ids"]:
+            owner_of_reference[ref_id] = stack["id"]
+
+    # (overlap, group_index, stack_id), best overlap first, ties broken
+    # deterministically so repeated runs are stable.
+    candidates: list[tuple[int, int, str]] = []
+    for index, group in enumerate(groups):
+        overlaps: dict[str, int] = {}
+        for ref_id in group:
+            stack_id = owner_of_reference.get(ref_id)
+            if stack_id is not None:
+                overlaps[stack_id] = overlaps.get(stack_id, 0) + 1
+        candidates.extend((count, index, sid) for sid, count in overlaps.items())
+    candidates.sort(key=lambda c: (-c[0], c[1], c[2]))
+
+    stack_for_group: dict[int, str] = {}
+    matched_stack_ids: set[str] = set()
+    for _count, index, stack_id in candidates:
+        if index in stack_for_group or stack_id in matched_stack_ids:
+            continue
+        stack_for_group[index] = stack_id
+        matched_stack_ids.add(stack_id)
+
+    synced: list[dict[str, Any]] = []
+    for index, group in enumerate(groups):
+        stack_id = stack_for_group.get(index)
+        if stack_id is None:
+            synced.append(create_stack(conn, project_id=project_id, reference_ids=group))
+        else:
+            synced.append(_rewrite_stack_members(conn, stack_id, group))
+
+    for stack in existing:
+        if stack["id"] not in matched_stack_ids:
+            conn.execute("DELETE FROM stacks WHERE id = ?", (stack["id"],))
+
+    return synced
 
 
 # ------------------------------------------------------------------ themes --
@@ -373,27 +447,73 @@ def update_theme(
     return get_theme(conn, theme_id)
 
 
+def delete_theme(conn: sqlite3.Connection, theme_id: str) -> bool:
+    """Delete a theme. Cascades to its pages, page items and assignments.
+
+    The stacks themselves survive and simply become unassigned.
+    """
+    cur = conn.execute("DELETE FROM themes WHERE id = ?", (theme_id,))
+    return cur.rowcount > 0
+
+
 def assign_stack_to_theme(
     conn: sqlite3.Connection,
     *,
     stack_id: str,
     theme_id: str,
     exclusive: bool = True,
+    adopt: bool = True,
 ) -> None:
+    """Assign a stack to a theme.
+
+    ``adopt`` marks the theme as owner-curated (``ai_proposed = 0``) so
+    reprocessing leaves it alone. The pipeline passes ``adopt=False``
+    when it creates its own proposals.
+    """
     if exclusive:
         conn.execute("DELETE FROM stack_themes WHERE stack_id = ?", (stack_id,))
     conn.execute(
         "INSERT OR IGNORE INTO stack_themes (stack_id, theme_id) VALUES (?, ?)",
         (stack_id, theme_id),
     )
+    if adopt:
+        conn.execute("UPDATE themes SET ai_proposed = 0 WHERE id = ?", (theme_id,))
+
+
+def unassign_stack(conn: sqlite3.Connection, *, stack_id: str, theme_id: str) -> bool:
+    cur = conn.execute(
+        "DELETE FROM stack_themes WHERE stack_id = ? AND theme_id = ?",
+        (stack_id, theme_id),
+    )
+    return cur.rowcount > 0
 
 
 def list_stack_ids_for_theme(conn: sqlite3.Connection, theme_id: str) -> list[str]:
     cur = conn.execute(
-        "SELECT stack_id FROM stack_themes WHERE theme_id = ?",
+        """
+        SELECT st.stack_id AS stack_id
+        FROM stack_themes AS st
+        JOIN stacks AS s ON s.id = st.stack_id
+        WHERE st.theme_id = ?
+        ORDER BY s.created_at ASC, s.id ASC
+        """,
         (theme_id,),
     )
     return [row["stack_id"] for row in cur.fetchall()]
+
+
+def list_assigned_stack_ids(conn: sqlite3.Connection, project_id: str) -> set[str]:
+    """Stack ids that already belong to some theme in this project."""
+    cur = conn.execute(
+        """
+        SELECT DISTINCT st.stack_id AS stack_id
+        FROM stack_themes AS st
+        JOIN stacks AS s ON s.id = st.stack_id
+        WHERE s.project_id = ?
+        """,
+        (project_id,),
+    )
+    return {row["stack_id"] for row in cur.fetchall()}
 
 
 # ------------------------------------------------------------- pages/items --
@@ -457,6 +577,23 @@ def update_page(
     values.append(page_id)
     conn.execute(f"UPDATE pages SET {', '.join(fields)} WHERE id = ?", values)
     return get_page(conn, page_id)
+
+
+def delete_page(conn: sqlite3.Connection, page_id: str) -> bool:
+    """Delete a page and cascade to its items, then close the order gap."""
+    row = conn.execute("SELECT theme_id FROM pages WHERE id = ?", (page_id,)).fetchone()
+    if row is None:
+        return False
+    conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
+    remaining = conn.execute(
+        "SELECT id FROM pages WHERE theme_id = ? ORDER BY order_index ASC",
+        (row["theme_id"],),
+    ).fetchall()
+    conn.executemany(
+        "UPDATE pages SET order_index = ? WHERE id = ?",
+        [(index, page["id"]) for index, page in enumerate(remaining)],
+    )
+    return True
 
 
 def add_page_item(

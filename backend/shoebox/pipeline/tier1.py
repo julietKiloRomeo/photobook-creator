@@ -16,16 +16,25 @@ dataclasses. The upload handler is the only place that calls it.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
 import imagehash
-from PIL import ExifTags, Image, ImageOps, UnidentifiedImageError
+from PIL import ExifTags, Image, ImageFile, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 
 register_heif_opener()
+
+# Phone cameras and cloud-sync clients routinely produce JPEGs whose last
+# MCU row is missing. Pillow raises ``OSError: image file is truncated``
+# on those by default, which rejected perfectly usable family photos.
+# Decoding what is there beats losing the photo.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+log = logging.getLogger(__name__)
 
 
 class ImageDecodeError(ValueError):
@@ -127,19 +136,26 @@ def ingest_file(
             opened.load()
             img = ImageOps.exif_transpose(opened)
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
-        raise ImageDecodeError("Image could not be decoded") from exc
+        raise ImageDecodeError(f"{type(exc).__name__}: {exc}") from exc
 
     width, height = img.size
+    # EXIF is best-effort metadata, never a reason to drop a decodable photo.
     try:
         captured_at = _exif_datetime(img)
+    except Exception:
+        log.warning("EXIF datetime unreadable for %s", source_path.name, exc_info=True)
+        captured_at = None
+    try:
         gps_lat, gps_lon = _exif_gps(img)
-    except Exception as exc:
-        raise ImageDecodeError("Image metadata could not be decoded") from exc
+    except Exception:
+        log.warning("EXIF GPS unreadable for %s", source_path.name, exc_info=True)
+        gps_lat, gps_lon = None, None
 
     phash_value: str | None
     try:
         phash_value = str(imagehash.phash(img))
     except Exception:  # pragma: no cover — pHash never blocks ingest
+        log.warning("pHash failed for %s", source_path.name, exc_info=True)
         phash_value = None
 
     thumbs_dir.mkdir(parents=True, exist_ok=True)

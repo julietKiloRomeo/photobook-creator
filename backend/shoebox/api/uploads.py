@@ -13,6 +13,7 @@ The file isn't written a second time.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -25,6 +26,8 @@ from shoebox.config import get_settings
 from shoebox.jobs import get_runner
 from shoebox.pipeline.tier1 import ImageDecodeError, ingest_file
 from shoebox.store import connection, dao
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["uploads"])
 
@@ -88,17 +91,38 @@ async def upload_files(project_id: str, files: list[UploadFile]) -> UploadResult
     duplicates = 0
     rejected: list[UploadRejection] = []
 
+    def reject(filename: str, reason: str, detail: str = "") -> None:
+        """Record a rejection.
+
+        The response body carries only the coarse category — decoder
+        output can echo file bytes back to the client. The full detail
+        goes to the log, which is where jkr can actually diagnose why a
+        photo did not make it in.
+        """
+        log.warning(
+            "Upload rejected for project %s: %s — %s%s",
+            project_id,
+            filename,
+            reason,
+            f" [{detail}]" if detail else "",
+        )
+        rejected.append(UploadRejection(filename=filename, reason=reason))
+
+    log.info("Upload of %d file(s) started for project %s", len(files), project_id)
+
     for upload in files:
         filename = _safe_filename(upload.filename)
         content = await upload.read()
         if not content:
-            rejected.append(UploadRejection(filename=filename, reason="file is empty"))
+            reject(filename, "file is empty")
             continue
 
         extension = Path(filename).suffix.lower()
         if extension not in SUPPORTED_EXTENSIONS:
-            rejected.append(
-                UploadRejection(filename=filename, reason="unsupported file type")
+            reject(
+                filename,
+                "unsupported file type",
+                detail=f"extension={extension or 'none'}",
             )
             continue
 
@@ -116,12 +140,8 @@ async def upload_files(project_id: str, files: list[UploadFile]) -> UploadResult
                     thumb_small_width=settings.thumb_small_width,
                     thumb_medium_width=settings.thumb_medium_width,
                 )
-            except ImageDecodeError:
-                rejected.append(
-                    UploadRejection(
-                        filename=filename, reason="file could not be decoded"
-                    )
-                )
+            except ImageDecodeError as exc:
+                reject(filename, "file could not be decoded", detail=str(exc))
                 continue
 
             final_original = originals_dir / f"{result.file_hash}{extension}"
@@ -174,6 +194,15 @@ async def upload_files(project_id: str, files: list[UploadFile]) -> UploadResult
     if accepted_refs:
         job = get_runner().enqueue(project_id=project_id, kind="process")
         job_id = job["id"]
+
+    log.info(
+        "Upload finished for project %s: %d accepted, %d duplicate, %d rejected, job=%s",
+        project_id,
+        len(accepted_refs),
+        duplicates,
+        len(rejected),
+        job_id,
+    )
 
     return UploadResult(
         accepted=len(accepted_refs),

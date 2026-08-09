@@ -216,3 +216,149 @@ def test_renamed_auto_theme_survives_reprocessing(
     surviving = [t for t in themes_after if t["id"] == chosen_id]
     assert surviving, "Renamed theme was wiped by reprocessing."
     assert surviving[0]["name"] == "Sunset Walks"
+
+
+def _upload_some(
+    client: TestClient, project_id: str, fixture_dir: Path, names: list[str]
+) -> dict:
+    files = []
+    handles = []
+    try:
+        for name in names:
+            path = fixture_dir / name
+            handle = path.open("rb")
+            handles.append(handle)
+            files.append(("files", (path.name, handle, "image/jpeg")))
+        response = client.post(f"/api/projects/{project_id}/uploads", files=files)
+    finally:
+        for handle in handles:
+            handle.close()
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_curated_theme_assignments_survive_a_later_upload(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    """The reported bug: adding photos scattered already-filed stacks.
+
+    Processing used to wipe and recreate every stack, cascading
+    ``stack_themes`` away, so a fresh upload re-shuffled the owner's
+    curation. Whatever the owner filed must stay filed.
+    """
+    project = client.post("/api/projects", json={"name": "Incremental"}).json()
+    project_id = project["id"]
+
+    photos = sorted(p.name for p in fixture_pack_dir.glob("vacation_*.jpg"))
+    first_batch, second_batch = photos[:10], photos[10:]
+
+    upload = _upload_some(client, project_id, fixture_pack_dir, first_batch)
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    curated = client.post(
+        f"/api/projects/{project_id}/themes", json={"name": "Best of the trip"}
+    ).json()
+    stacks = client.get(f"/api/projects/{project_id}/stacks").json()
+    assert len(stacks) >= 3
+    filed = [s["id"] for s in stacks[:3]]
+    for stack_id in filed:
+        assert (
+            client.post(
+                f"/api/themes/{curated['id']}/assign", json={"stack_id": stack_id}
+            ).status_code
+            == 204
+        )
+
+    second = _upload_some(client, project_id, fixture_pack_dir, second_batch)
+    assert second["accepted"] == len(second_batch)
+    assert _wait_for_job(client, second["job_id"])["status"] == "completed"
+
+    still_filed = client.get(f"/api/themes/{curated['id']}/stacks").json()
+    assert sorted(still_filed) == sorted(filed), (
+        "Uploading more photos moved stacks out of the theme the owner chose."
+    )
+
+
+def test_a_manual_move_is_not_undone_by_reprocessing(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    project = client.post("/api/projects", json={"name": "Manual move"}).json()
+    project_id = project["id"]
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    source = client.get(f"/api/projects/{project_id}/themes").json()[0]
+    target = client.post(
+        f"/api/projects/{project_id}/themes", json={"name": "Keepers"}
+    ).json()
+    moving = client.get(f"/api/themes/{source['id']}/stacks").json()[0]
+
+    assert (
+        client.post(
+            f"/api/themes/{target['id']}/assign", json={"stack_id": moving}
+        ).status_code
+        == 204
+    )
+
+    reprocess = client.post(f"/api/projects/{project_id}/process").json()
+    assert _wait_for_job(client, reprocess["id"])["status"] == "completed"
+
+    assert moving in client.get(f"/api/themes/{target['id']}/stacks").json()
+    assert moving not in client.get(f"/api/themes/{source['id']}/stacks").json()
+
+
+def test_deleting_a_theme_removes_it_and_its_pages(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    project = client.post("/api/projects", json={"name": "Delete theme"}).json()
+    project_id = project["id"]
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    theme = client.get(f"/api/projects/{project_id}/themes").json()[0]
+    page = client.post(f"/api/themes/{theme['id']}/pages", json={}).json()
+
+    assert client.delete(f"/api/themes/{theme['id']}").status_code == 204
+
+    remaining = client.get(f"/api/projects/{project_id}/themes").json()
+    assert all(t["id"] != theme["id"] for t in remaining)
+    assert client.get(f"/api/pages/{page['id']}/items").status_code == 404
+    assert client.delete(f"/api/themes/{theme['id']}").status_code == 404
+    # The photos themselves are untouched.
+    assert client.get(f"/api/projects/{project_id}/stacks").json()
+
+
+def test_deleting_a_page_leaves_the_theme_intact(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    project = client.post("/api/projects", json={"name": "Delete page"}).json()
+    project_id = project["id"]
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    theme = client.get(f"/api/projects/{project_id}/themes").json()[0]
+    first = client.post(f"/api/themes/{theme['id']}/pages", json={}).json()
+    second = client.post(f"/api/themes/{theme['id']}/pages", json={}).json()
+
+    assert client.delete(f"/api/pages/{first['id']}").status_code == 204
+
+    pages = client.get(f"/api/themes/{theme['id']}/pages").json()
+    assert [p["id"] for p in pages] == [second["id"]]
+    assert pages[0]["order_index"] == 0
+    assert client.delete(f"/api/pages/{first['id']}").status_code == 404
+
+
+def test_unassigning_a_stack_frees_it_from_its_theme(
+    client: TestClient, fixture_pack_dir: Path
+) -> None:
+    project = client.post("/api/projects", json={"name": "Unassign"}).json()
+    project_id = project["id"]
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    theme = client.get(f"/api/projects/{project_id}/themes").json()[0]
+    stack_id = client.get(f"/api/themes/{theme['id']}/stacks").json()[0]
+
+    assert client.delete(f"/api/themes/{theme['id']}/stacks/{stack_id}").status_code == 204
+    assert stack_id not in client.get(f"/api/themes/{theme['id']}/stacks").json()
+    assert client.delete(f"/api/themes/{theme['id']}/stacks/{stack_id}").status_code == 404

@@ -131,6 +131,19 @@
     }
   }
 
+  async function deletePage(page: Page) {
+    if (!confirm(`Delete page ${page.order_index + 1}? Its photos and notes go with it.`)) return;
+    busy = true;
+    try {
+      await api.deletePage(page.id);
+      await refreshTheme();
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+
   function openPicker(pageId: string, slot: number) {
     editingPageId = pageId;
     pickerSlot = slot;
@@ -211,7 +224,15 @@
           <li class="page">
             <header>
               <span class="page-label">Page {page.order_index + 1}</span>
-              <button class="page-action" on:click={() => addTextBlock(page.id)}>+ Text</button>
+              <span class="page-actions">
+                <button class="page-action" on:click={() => addTextBlock(page.id)}>+ Text</button>
+                <button
+                  class="page-action danger"
+                  on:click={() => deletePage(page)}
+                  disabled={busy}
+                  aria-label={`Delete page ${page.order_index + 1}`}
+                >Delete page</button>
+              </span>
             </header>
             <div class="slots">
               {#each photoItemsByPage[page.id] ?? [undefined, undefined, undefined, undefined] as item, slot}
@@ -354,6 +375,9 @@
     color: var(--color-text-soft);
   }
   .page-action:hover { background: var(--color-border-soft); }
+  .page-action:disabled { opacity: 0.5; cursor: default; }
+  .page-actions { display: flex; gap: var(--space-2); }
+  .page-action.danger { color: var(--color-danger); border-color: var(--color-danger); }
   .slots {
     display: grid;
     grid-template-columns: 1fr 1fr;

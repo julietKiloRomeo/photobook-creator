@@ -35,6 +35,8 @@ class Reference(BaseModel):
 
 class UploadRejection(BaseModel):
     filename: str
+    # Deliberately coarse: decoder output can echo raw file bytes, so it
+    # never crosses the API boundary. Full detail lives in the log.
     reason: Literal[
         "unsupported file type",
         "file could not be decoded",

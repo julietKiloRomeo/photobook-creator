@@ -15,12 +15,15 @@ processes for the same project queue, the second waits.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from queue import Empty, Queue
 from typing import Any
 
 from shoebox.store import connection, dao
+
+log = logging.getLogger(__name__)
 
 JobFunc = Callable[[str, "JobReporter"], None]
 
@@ -32,6 +35,7 @@ class JobReporter:
         self.job_id = job_id
 
     def progress(self, value: float, message: str | None = None) -> None:
+        log.debug("Job %s progress %.0f%% %s", self.job_id, value * 100, message or "")
         with connection() as conn:
             dao.update_job(conn, self.job_id, progress=value, message=message)
 
@@ -111,6 +115,7 @@ class JobRunner:
     def _run_one(self, job_id: str, kind: str) -> None:
         handler = self._handlers.get(kind)
         if handler is None:
+            log.error("Job %s has no handler for kind %r", job_id, kind)
             with connection() as conn:
                 dao.update_job(
                     conn,
@@ -128,20 +133,23 @@ class JobRunner:
             project_id = job["project_id"]
             dao.update_job(conn, job_id, status="running", started=True)
 
+        log.info("Job %s (%s) started for project %s", job_id, kind, project_id)
         reporter = JobReporter(job_id)
         try:
             handler(project_id, reporter)
         except Exception as exc:
+            log.exception("Job %s (%s) failed for project %s", job_id, kind, project_id)
             with connection() as conn:
                 dao.update_job(
                     conn,
                     job_id,
                     status="failed",
-                    error=str(exc),
+                    error=f"{type(exc).__name__}: {exc}",
                     finished=True,
                 )
             return
 
+        log.info("Job %s (%s) completed for project %s", job_id, kind, project_id)
         with connection() as conn:
             dao.update_job(conn, job_id, status="completed", progress=1.0, finished=True)
 

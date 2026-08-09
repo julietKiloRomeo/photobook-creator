@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from shoebox.api.schemas import Theme, ThemeAssignment, ThemeCreate, ThemeUpdate
 from shoebox.store import connection, dao
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["themes"])
 
@@ -58,6 +62,19 @@ def update_theme(theme_id: str, payload: ThemeUpdate) -> Theme:
     return _to_theme(updated)
 
 
+@router.delete("/api/themes/{theme_id}", status_code=204)
+def delete_theme(theme_id: str) -> None:
+    """Delete a theme, its pages and its assignments.
+
+    Stacks are not deleted — they fall back to unassigned and can be
+    filed into another theme.
+    """
+    with connection() as conn:
+        if not dao.delete_theme(conn, theme_id):
+            raise HTTPException(status_code=404, detail="Theme not found")
+    log.info("Theme %s deleted", theme_id)
+
+
 @router.post("/api/themes/{theme_id}/assign", status_code=204)
 def assign_stack(theme_id: str, payload: ThemeAssignment) -> None:
     with connection() as conn:
@@ -66,6 +83,16 @@ def assign_stack(theme_id: str, payload: ThemeAssignment) -> None:
         if dao.get_stack(conn, payload.stack_id) is None:
             raise HTTPException(status_code=404, detail="Stack not found")
         dao.assign_stack_to_theme(conn, stack_id=payload.stack_id, theme_id=theme_id)
+
+
+@router.delete("/api/themes/{theme_id}/stacks/{stack_id}", status_code=204)
+def unassign_stack(theme_id: str, stack_id: str) -> None:
+    """Remove a stack from a theme, leaving it unassigned."""
+    with connection() as conn:
+        if dao.get_theme(conn, theme_id) is None:
+            raise HTTPException(status_code=404, detail="Theme not found")
+        if not dao.unassign_stack(conn, stack_id=stack_id, theme_id=theme_id):
+            raise HTTPException(status_code=404, detail="Stack is not in this theme")
 
 
 @router.get("/api/themes/{theme_id}/stacks", response_model=list[str])

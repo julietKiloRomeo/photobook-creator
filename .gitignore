@@ -24,8 +24,13 @@ data/
 frontend/node_modules/
 frontend/dist/
 frontend/.svelte-kit/
+frontend/.vite/
 frontend/.e2e-data/
 frontend/test-results/
 frontend/playwright-report/
 
 .env
+
+# Brainstorming visual-companion session files
+.superpowers/
+data-audit/

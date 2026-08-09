@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     db_filename: str = "shoebox.db"
 
+    # Logging.
+    log_level: str = "INFO"
+    log_to_file: bool = True
+    log_filename: str = "shoebox.log"
+
     # Tier-1 pipeline tunables.
     thumb_small_width: int = 256
     thumb_medium_width: int = 800
@@ -37,6 +42,14 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_dir / self.db_filename
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.data_dir / "logs"
+
+    @property
+    def log_path(self) -> Path:
+        return self.logs_dir / self.log_filename
 
     def project_dir(self, project_id: str) -> Path:
         return self.data_dir / "projects" / project_id

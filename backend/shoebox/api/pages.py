@@ -67,6 +67,14 @@ def update_page(page_id: str, payload: PageUpdate) -> Page:
     return _to_page(updated)
 
 
+@router.delete("/api/pages/{page_id}", status_code=204)
+def delete_page(page_id: str) -> None:
+    """Delete a page and its items; remaining pages close the order gap."""
+    with connection() as conn:
+        if not dao.delete_page(conn, page_id):
+            raise HTTPException(status_code=404, detail="Page not found")
+
+
 @router.get("/api/pages/{page_id}/items", response_model=list[PageItem])
 def list_page_items(page_id: str) -> list[PageItem]:
     with connection() as conn:
