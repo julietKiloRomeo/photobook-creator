@@ -6,6 +6,8 @@ convert to these models for response serialisation.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +20,7 @@ class Project(BaseModel):
     name: str
     created_at: str
     status: str
+    photo_count: int
 
 
 class Reference(BaseModel):
@@ -30,10 +33,21 @@ class Reference(BaseModel):
     uploaded_at: str
 
 
+class UploadRejection(BaseModel):
+    filename: str
+    reason: Literal[
+        "unsupported file type",
+        "file could not be decoded",
+        "file is empty",
+    ]
+
+
 class UploadResult(BaseModel):
     accepted: int
     duplicates: int
     references: list[Reference]
+    rejected: list[UploadRejection]
+    job_id: str | None
 
 
 class Stack(BaseModel):

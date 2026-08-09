@@ -1,6 +1,6 @@
 """End-to-end test for the processing flow.
 
-Uploads the vacation-20 fixture pack, kicks off the process job, polls
+Uploads the vacation-20 fixture pack, receives the automatic process job, polls
 to completion, and asserts the resulting stacks/themes are well-formed.
 This is the M1 integration heartbeat — if this test goes red, the
 backend story is broken.
@@ -50,10 +50,8 @@ def test_end_to_end_processing_produces_stacks_and_themes(
     upload = _upload_all(client, project_id, fixture_pack_dir)
     assert upload["accepted"] == 20
 
-    queued = client.post(f"/api/projects/{project_id}/process")
-    assert queued.status_code == 202
-    job_id = queued.json()["id"]
-
+    job_id = upload["job_id"]
+    assert job_id is not None
     finished = _wait_for_job(client, job_id)
     assert finished["status"] == "completed", finished
 
@@ -88,9 +86,10 @@ def test_picking_a_stack_marks_it_resolved(
     project = client.post("/api/projects", json={"name": "Pick"}).json()
     project_id = project["id"]
 
-    _upload_all(client, project_id, fixture_pack_dir)
-    job_id = client.post(f"/api/projects/{project_id}/process").json()["id"]
-    _wait_for_job(client, job_id)
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    job_id = upload["job_id"]
+    assert job_id is not None
+    assert _wait_for_job(client, job_id)["status"] == "completed"
 
     stacks = client.get(f"/api/projects/{project_id}/stacks").json()
     multi = next((s for s in stacks if len(s["reference_ids"]) > 1), None)
@@ -115,14 +114,14 @@ def test_reprocessing_replaces_the_stack_set(
 ) -> None:
     project = client.post("/api/projects", json={"name": "Idempotent"}).json()
     project_id = project["id"]
-    _upload_all(client, project_id, fixture_pack_dir)
-
-    first_job = client.post(f"/api/projects/{project_id}/process").json()
-    _wait_for_job(client, first_job["id"])
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    first_job_id = upload["job_id"]
+    assert first_job_id is not None
+    assert _wait_for_job(client, first_job_id)["status"] == "completed"
     first_stacks = client.get(f"/api/projects/{project_id}/stacks").json()
 
     second_job = client.post(f"/api/projects/{project_id}/process").json()
-    _wait_for_job(client, second_job["id"])
+    assert _wait_for_job(client, second_job["id"])["status"] == "completed"
     second_stacks = client.get(f"/api/projects/{project_id}/stacks").json()
 
     # Same input → same shape (count and sizes).
@@ -135,9 +134,10 @@ def test_reprocessing_replaces_the_stack_set(
 def test_renaming_a_theme_persists(client: TestClient, fixture_pack_dir: Path) -> None:
     project = client.post("/api/projects", json={"name": "Rename"}).json()
     project_id = project["id"]
-    _upload_all(client, project_id, fixture_pack_dir)
-    job_id = client.post(f"/api/projects/{project_id}/process").json()["id"]
-    _wait_for_job(client, job_id)
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    job_id = upload["job_id"]
+    assert job_id is not None
+    assert _wait_for_job(client, job_id)["status"] == "completed"
 
     themes = client.get(f"/api/projects/{project_id}/themes").json()
     assert themes
@@ -170,9 +170,13 @@ def test_user_created_theme_survives_processing(
     ).json()
     user_theme_id = user_theme["id"]
 
-    _upload_all(client, project_id, fixture_pack_dir)
-    job_id = client.post(f"/api/projects/{project_id}/process").json()["id"]
-    _wait_for_job(client, job_id)
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    job_id = upload["job_id"]
+    assert job_id is not None
+    assert _wait_for_job(client, job_id)["status"] == "completed"
+
+    reprocessing = client.post(f"/api/projects/{project_id}/process").json()
+    assert _wait_for_job(client, reprocessing["id"])["status"] == "completed"
 
     themes_after = client.get(f"/api/projects/{project_id}/themes").json()
     surviving = [t for t in themes_after if t["id"] == user_theme_id]
@@ -193,10 +197,10 @@ def test_renamed_auto_theme_survives_reprocessing(
     """
     project = client.post("/api/projects", json={"name": "Rename then reprocess"}).json()
     project_id = project["id"]
-    _upload_all(client, project_id, fixture_pack_dir)
-
-    first_job = client.post(f"/api/projects/{project_id}/process").json()["id"]
-    _wait_for_job(client, first_job)
+    upload = _upload_all(client, project_id, fixture_pack_dir)
+    first_job = upload["job_id"]
+    assert first_job is not None
+    assert _wait_for_job(client, first_job)["status"] == "completed"
 
     themes = client.get(f"/api/projects/{project_id}/themes").json()
     assert themes, "expected at least one auto-proposed theme after first processing"
@@ -206,7 +210,7 @@ def test_renamed_auto_theme_survives_reprocessing(
     assert renamed.status_code == 200
 
     second_job = client.post(f"/api/projects/{project_id}/process").json()["id"]
-    _wait_for_job(client, second_job)
+    assert _wait_for_job(client, second_job)["status"] == "completed"
 
     themes_after = client.get(f"/api/projects/{project_id}/themes").json()
     surviving = [t for t in themes_after if t["id"] == chosen_id]

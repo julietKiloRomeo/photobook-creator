@@ -105,7 +105,7 @@
 {#if loading}
   <p class="muted">Loading themes…</p>
 {:else if themes.length === 0}
-  <p class="muted">No themes yet. Tap <em>Process new photos</em> to let shoebox propose some, or add one above.</p>
+  <p class="muted">No themes yet. Themes appear automatically after photos are organized. You can also add one above.</p>
 {:else}
   <div class="themes">
     {#each themes as theme (theme.id)}

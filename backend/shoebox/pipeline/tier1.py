@@ -22,7 +22,14 @@ from pathlib import Path
 from typing import BinaryIO
 
 import imagehash
-from PIL import ExifTags, Image, ImageOps
+from PIL import ExifTags, Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
+
+
+class ImageDecodeError(ValueError):
+    """The submitted file could not be decoded as an image."""
 
 _EXIF_TAGS = {v: k for k, v in ExifTags.TAGS.items()}
 _GPS_TAGS = {v: k for k, v in ExifTags.GPSTAGS.items()}
@@ -115,21 +122,30 @@ def ingest_file(
     the file hash. Returns the values the DAO needs to persist.
     """
     file_hash = sha256_of_path(source_path)
-    with Image.open(source_path) as img:
-        img = ImageOps.exif_transpose(img)
-        width, height = img.size
+    try:
+        with Image.open(source_path) as opened:
+            opened.load()
+            img = ImageOps.exif_transpose(opened)
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise ImageDecodeError("Image could not be decoded") from exc
+
+    width, height = img.size
+    try:
         captured_at = _exif_datetime(img)
         gps_lat, gps_lon = _exif_gps(img)
-        phash_value: str | None
-        try:
-            phash_value = str(imagehash.phash(img))
-        except Exception:  # pragma: no cover — pHash never blocks ingest
-            phash_value = None
+    except Exception as exc:
+        raise ImageDecodeError("Image metadata could not be decoded") from exc
 
-        thumbs_dir.mkdir(parents=True, exist_ok=True)
-        medium_dir.mkdir(parents=True, exist_ok=True)
-        _write_derivative(img, thumbs_dir / f"{file_hash}.jpg", thumb_small_width)
-        _write_derivative(img, medium_dir / f"{file_hash}.jpg", thumb_medium_width)
+    phash_value: str | None
+    try:
+        phash_value = str(imagehash.phash(img))
+    except Exception:  # pragma: no cover — pHash never blocks ingest
+        phash_value = None
+
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+    medium_dir.mkdir(parents=True, exist_ok=True)
+    _write_derivative(img, thumbs_dir / f"{file_hash}.jpg", thumb_small_width)
+    _write_derivative(img, medium_dir / f"{file_hash}.jpg", thumb_medium_width)
 
     return IngestedPhoto(
         file_hash=file_hash,

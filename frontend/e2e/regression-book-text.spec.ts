@@ -28,15 +28,11 @@ async function createProjectWithProcessedPhotos(page: Page): Promise<void> {
   const files = await pickFiles(8);
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: /upload photos/i }).click(),
+    page.getByRole("button", { name: "Add photos" }).click(),
   ]);
   await chooser.setFiles(files);
   await expect(page.getByText(/added\s+8/i)).toBeVisible({ timeout: 30_000 });
-
-  await page.getByRole("button", { name: /process new photos/i }).click();
-  await expect(page.getByRole("button", { name: /^process new photos$/i })).toBeVisible({
-    timeout: 60_000,
-  });
+  await expect(page.getByRole("button", { name: "View All" })).toBeVisible({ timeout: 30_000 });
 
   await page.getByRole("button", { name: "Book", exact: true }).click();
   await page.getByRole("button", { name: /auto-build draft/i }).click();

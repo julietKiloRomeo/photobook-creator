@@ -39,6 +39,7 @@ export type Project = {
   name: string;
   created_at: string;
   status: string;
+  photo_count: number;
 };
 
 export type Reference = {
@@ -55,6 +56,18 @@ export type UploadResult = {
   accepted: number;
   duplicates: number;
   references: Reference[];
+  rejected: UploadRejection[];
+  job_id: string | null;
+};
+
+export type UploadRejection = {
+  filename: string;
+  reason: "unsupported file type" | "file could not be decoded" | "file is empty";
+};
+
+export type UploadProgress = {
+  loaded: number;
+  total: number;
 };
 
 export type Stack = {
@@ -115,12 +128,38 @@ export const api = {
     request<void>(`/api/projects/${id}`, { method: "DELETE" }),
 
   // Uploads
-  uploadFiles: (projectId: string, files: File[]) => {
+  uploadFiles: (
+    projectId: string,
+    files: File[],
+    onProgress?: (progress: UploadProgress) => void,
+  ) => {
     const form = new FormData();
     for (const f of files) form.append("files", f);
-    return request<UploadResult>(`/api/projects/${projectId}/uploads`, {
-      method: "POST",
-      body: form,
+    return new Promise<UploadResult>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/projects/${projectId}/uploads`);
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress?.({ loaded: event.loaded, total: event.total });
+        }
+      });
+      xhr.addEventListener("load", () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new ApiError(xhr.status, xhr.responseText || xhr.statusText));
+          return;
+        }
+        try {
+          resolve(JSON.parse(xhr.responseText) as UploadResult);
+        } catch (error) {
+          reject(error);
+        }
+      });
+      xhr.addEventListener("error", () => reject(new TypeError("Failed to fetch")));
+      xhr.addEventListener("abort", () =>
+        reject(new DOMException("The operation was aborted.", "AbortError")),
+      );
+      xhr.send(form);
     });
   },
   thumbUrl: (projectId: string, referenceId: string) =>

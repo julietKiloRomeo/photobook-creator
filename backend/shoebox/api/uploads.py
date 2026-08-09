@@ -1,7 +1,7 @@
 """Uploads + reference image serving.
 
 Each uploaded file goes through tier-1 synchronously:
-  bytes → SHA-256 → save original → EXIF + pHash + thumbnails → upsert.
+  bytes → staged EXIF + pHash + thumbnails → atomic persistence.
 
 Originals live at ``data/projects/<id>/originals/<file_hash>.<ext>``.
 Derivatives at ``thumbs/`` and ``medium/`` next to originals.
@@ -20,12 +20,26 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from shoebox.api.schemas import Reference, UploadResult
+from shoebox.api.schemas import Reference, UploadRejection, UploadResult
 from shoebox.config import get_settings
-from shoebox.pipeline.tier1 import ingest_file
+from shoebox.jobs import get_runner
+from shoebox.pipeline.tier1 import ImageDecodeError, ingest_file
 from shoebox.store import connection, dao
 
 router = APIRouter(tags=["uploads"])
+
+SUPPORTED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".heic",
+    ".heif",
+}
 
 
 def _to_reference(row: dict) -> Reference:
@@ -40,11 +54,15 @@ def _to_reference(row: dict) -> Reference:
     )
 
 
-def _ext_for(filename: str | None) -> str:
-    if not filename:
-        return ".jpg"
-    suffix = Path(filename).suffix.lower()
-    return suffix if suffix else ".jpg"
+def _safe_filename(filename: str | None) -> str:
+    return Path((filename or "").replace("\\", "/")).name or "unnamed file"
+
+
+def _move_if_missing(source: Path, target: Path, created_paths: list[Path]) -> None:
+    if target.exists():
+        return
+    shutil.move(str(source), str(target))
+    created_paths.append(target)
 
 
 @router.post(
@@ -59,68 +77,111 @@ async def upload_files(project_id: str, files: list[UploadFile]) -> UploadResult
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
 
+    project_dir = settings.project_dir(project_id)
     originals_dir = settings.project_originals_dir(project_id)
     thumbs_dir = settings.project_thumbs_dir(project_id)
     medium_dir = settings.project_medium_dir(project_id)
-    originals_dir.mkdir(parents=True, exist_ok=True)
+    for artifact_dir in (originals_dir, thumbs_dir, medium_dir):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
 
     accepted_refs: list[dict] = []
     duplicates = 0
+    rejected: list[UploadRejection] = []
 
     for upload in files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=_ext_for(upload.filename)) as tmp:
-            tmp_path = Path(tmp.name)
-            content = await upload.read()
-            tmp.write(content)
-        try:
-            result = ingest_file(
-                source_path=tmp_path,
-                thumbs_dir=thumbs_dir,
-                medium_dir=medium_dir,
-                thumb_small_width=settings.thumb_small_width,
-                thumb_medium_width=settings.thumb_medium_width,
-            )
-            final_path = originals_dir / f"{result.file_hash}{_ext_for(upload.filename)}"
-            is_new_on_disk = not final_path.exists()
-            if is_new_on_disk:
-                shutil.move(str(tmp_path), final_path)
+        filename = _safe_filename(upload.filename)
+        content = await upload.read()
+        if not content:
+            rejected.append(UploadRejection(filename=filename, reason="file is empty"))
+            continue
 
-            with connection() as conn:
-                already_known = dao.get_reference(conn, _find_existing_id(conn, project_id, result.file_hash) or "") is not None
-                ref = dao.upsert_reference(
-                    conn,
-                    project_id=project_id,
-                    original_path=str(final_path),
-                    file_hash=result.file_hash,
-                    phash=result.phash,
-                    captured_at=result.captured_at,
-                    gps_lat=result.gps_lat,
-                    gps_lon=result.gps_lon,
-                    width=result.width,
-                    height=result.height,
+        extension = Path(filename).suffix.lower()
+        if extension not in SUPPORTED_EXTENSIONS:
+            rejected.append(
+                UploadRejection(filename=filename, reason="unsupported file type")
+            )
+            continue
+
+        with tempfile.TemporaryDirectory(dir=project_dir, prefix=".upload-") as tmp:
+            staging_dir = Path(tmp)
+            source_path = staging_dir / f"source{extension}"
+            source_path.write_bytes(content)
+            staged_thumbs_dir = staging_dir / "thumbs"
+            staged_medium_dir = staging_dir / "medium"
+            try:
+                result = ingest_file(
+                    source_path=source_path,
+                    thumbs_dir=staged_thumbs_dir,
+                    medium_dir=staged_medium_dir,
+                    thumb_small_width=settings.thumb_small_width,
+                    thumb_medium_width=settings.thumb_medium_width,
                 )
-                if already_known:
-                    duplicates += 1
-                else:
-                    accepted_refs.append(ref)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink(missing_ok=True)
+            except ImageDecodeError:
+                rejected.append(
+                    UploadRejection(
+                        filename=filename, reason="file could not be decoded"
+                    )
+                )
+                continue
+
+            final_original = originals_dir / f"{result.file_hash}{extension}"
+            artifacts = (
+                (source_path, final_original),
+                (
+                    staged_thumbs_dir / f"{result.file_hash}.jpg",
+                    thumbs_dir / f"{result.file_hash}.jpg",
+                ),
+                (
+                    staged_medium_dir / f"{result.file_hash}.jpg",
+                    medium_dir / f"{result.file_hash}.jpg",
+                ),
+            )
+            created_paths: list[Path] = []
+            transaction_succeeded = False
+            try:
+                with connection() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    with conn:
+                        ref, created = dao.insert_reference_if_new(
+                            conn,
+                            project_id=project_id,
+                            original_path=str(final_original),
+                            file_hash=result.file_hash,
+                            phash=result.phash,
+                            captured_at=result.captured_at,
+                            gps_lat=result.gps_lat,
+                            gps_lon=result.gps_lon,
+                            width=result.width,
+                            height=result.height,
+                        )
+                        if created:
+                            for staged_path, final_path in artifacts:
+                                _move_if_missing(
+                                    staged_path, final_path, created_paths
+                                )
+                    transaction_succeeded = True
+            finally:
+                if not transaction_succeeded:
+                    for path in reversed(created_paths):
+                        path.unlink(missing_ok=True)
+
+            if created:
+                accepted_refs.append(ref)
+            else:
+                duplicates += 1
+
+    job_id: str | None = None
+    if accepted_refs:
+        job = get_runner().enqueue(project_id=project_id, kind="process")
+        job_id = job["id"]
 
     return UploadResult(
         accepted=len(accepted_refs),
         duplicates=duplicates,
         references=[_to_reference(r) for r in accepted_refs],
+        rejected=rejected,
+        job_id=job_id,
     )
-
-
-def _find_existing_id(conn, project_id: str, file_hash: str) -> str | None:
-    cur = conn.execute(
-        "SELECT id FROM references_ WHERE project_id = ? AND file_hash = ?",
-        (project_id, file_hash),
-    )
-    row = cur.fetchone()
-    return row["id"] if row else None
 
 
 def _serve(project_id: str, reference_id: str, kind: str) -> FileResponse:

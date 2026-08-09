@@ -1,28 +1,42 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher } from "svelte";
   import { api, type Stack } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
 
   export let projectId: string;
+  export let photoCount: number;
+  export let processingActive: boolean;
 
   const dispatch = createEventDispatcher<{ changed: void }>();
 
+  let allStacks: Stack[] = [];
   let stacks: Stack[] = [];
   let filter: "pending" | "resolved" | "ignored" | "all" = "pending";
   let loading = true;
   let error = "";
   let openStack: Stack | null = null;
   let saving = false;
+  let hasResolvedStacks = false;
+  let loadedProjectId = "";
+  let loadGeneration = 0;
 
-  async function refresh() {
+  async function refresh(targetProjectId = projectId) {
+    const generation = ++loadGeneration;
     loading = true;
     error = "";
     try {
-      stacks = await api.listStacks(projectId, filter === "all" ? undefined : filter);
+      const loadedStacks = await api.listStacks(targetProjectId);
+      if (generation === loadGeneration && targetProjectId === projectId) {
+        allStacks = loadedStacks;
+      }
     } catch (e) {
-      error = (e as Error).message;
+      if (generation === loadGeneration && targetProjectId === projectId) {
+        error = (e as Error).message;
+      }
     } finally {
-      loading = false;
+      if (generation === loadGeneration && targetProjectId === projectId) {
+        loading = false;
+      }
     }
   }
 
@@ -67,9 +81,12 @@
     "all",
   ];
 
-  onMount(refresh);
-  $: if (projectId) refresh();
-  $: if (filter) refresh();
+  $: stacks = filter === "all" ? allStacks : allStacks.filter((stack) => stack.status === filter);
+  $: hasResolvedStacks = allStacks.some((stack) => stack.status === "resolved");
+  $: if (projectId && projectId !== loadedProjectId) {
+    loadedProjectId = projectId;
+    void refresh(projectId);
+  }
 </script>
 
 <div class="filters" role="tablist" aria-label="Filter by status">
@@ -85,22 +102,22 @@
   {/each}
 </div>
 
-{#if error}
-  <p class="error" role="alert">{error}</p>
-{/if}
-
 {#if loading}
   <p class="muted">Loading stacks…</p>
+{:else if error}
+  <p class="error" role="alert">{error}</p>
 {:else if stacks.length === 0}
-  {#if filter === "pending"}
+  {#if photoCount === 0}
+    <p class="muted">No photos yet. Add photos or a folder to begin.</p>
+  {:else if processingActive}
+    <p class="muted">Photos are being organized. Stacks will appear automatically.</p>
+  {:else if filter === "pending" && hasResolvedStacks}
     <p class="muted">
-      Nothing pending — everything's been picked, or you haven't uploaded yet.
-      Try <button class="link" on:click={() => (filter = "all")}>All</button> to see resolved stacks.
+      Organizing complete — nothing is pending.
+      <button class="link" on:click={() => (filter = "all")}>View All</button>
     </p>
   {:else}
-    <p class="muted">
-      No stacks here. Upload photos and tap <em>Process new photos</em> to create them.
-    </p>
+    <p class="muted">No stacks match this filter.</p>
   {/if}
 {:else}
   <ul class="grid" aria-label="Stacks">

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { api, type Project } from "../lib/api";
   import ProjectToolbar from "../lib/components/ProjectToolbar.svelte";
   import BookScreen from "./BookScreen.svelte";
@@ -9,8 +8,11 @@
   export let projectId: string;
   export let tab: "stacks" | "themes" | "book";
 
+  type ActivityPhase = "idle" | "uploading" | "processing";
+
   let project: Project | null = null;
   let error = "";
+  let activityPhase: ActivityPhase = "idle";
   // Bump this to force child screens to refetch after upload/process.
   let dataVersion = 0;
 
@@ -28,8 +30,16 @@
     dataVersion += 1;
   }
 
-  onMount(load);
-  $: if (projectId) load();
+  async function handleUploaded() {
+    await load();
+    bump();
+  }
+
+  function handleActivity(event: CustomEvent<{ phase: ActivityPhase }>) {
+    activityPhase = event.detail.phase;
+  }
+
+  $: if (projectId) void load();
 </script>
 
 {#if error}
@@ -39,13 +49,18 @@
 {#if project}
   <ProjectToolbar
     {projectId}
-    on:uploaded={bump}
+    on:uploaded={handleUploaded}
     on:processed={bump}
+    on:activity={handleActivity}
   />
 
   {#key dataVersion + tab}
     {#if tab === "stacks"}
-      <StacksScreen {projectId} />
+      <StacksScreen
+        {projectId}
+        photoCount={project.photo_count}
+        processingActive={activityPhase !== "idle"}
+      />
     {:else if tab === "themes"}
       <ThemesScreen {projectId} />
     {:else}

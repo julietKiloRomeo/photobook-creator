@@ -47,12 +47,27 @@ def create_project(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
 
 
 def get_project(conn: sqlite3.Connection, project_id: str) -> dict[str, Any] | None:
-    cur = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+    cur = conn.execute(
+        """
+        SELECT p.*,
+               (SELECT COUNT(*) FROM references_ AS r WHERE r.project_id = p.id) AS photo_count
+        FROM projects AS p
+        WHERE p.id = ?
+        """,
+        (project_id,),
+    )
     return _row(cur.fetchone())
 
 
 def list_projects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    cur = conn.execute("SELECT * FROM projects ORDER BY created_at DESC")
+    cur = conn.execute(
+        """
+        SELECT p.*,
+               (SELECT COUNT(*) FROM references_ AS r WHERE r.project_id = p.id) AS photo_count
+        FROM projects AS p
+        ORDER BY p.created_at DESC
+        """
+    )
     return _rows(cur.fetchall())
 
 
@@ -82,20 +97,46 @@ def upsert_reference(
     The dedup contract is: identical bytes anywhere in the same project
     are a single reference. Callers don't have to check first.
     """
-    existing = conn.execute(
-        "SELECT * FROM references_ WHERE project_id = ? AND file_hash = ?",
-        (project_id, file_hash),
-    ).fetchone()
-    if existing is not None:
-        return dict(existing)
+    reference, _ = insert_reference_if_new(
+        conn,
+        project_id=project_id,
+        original_path=original_path,
+        file_hash=file_hash,
+        phash=phash,
+        captured_at=captured_at,
+        gps_lat=gps_lat,
+        gps_lon=gps_lon,
+        width=width,
+        height=height,
+        uploader_member_id=uploader_member_id,
+    )
+    return reference
+
+
+def insert_reference_if_new(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    original_path: str,
+    file_hash: str,
+    phash: str | None = None,
+    captured_at: str | None = None,
+    gps_lat: float | None = None,
+    gps_lon: float | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    uploader_member_id: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Atomically insert or return a project reference and creation status."""
 
     reference_id = _new_id("r")
-    conn.execute(
+    inserted = conn.execute(
         """
         INSERT INTO references_ (
             id, project_id, original_path, file_hash, phash, captured_at,
             gps_lat, gps_lon, width, height, uploader_member_id, uploaded_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, file_hash) DO NOTHING
         """,
         (
             reference_id,
@@ -111,10 +152,18 @@ def upsert_reference(
             uploader_member_id,
             _now_iso(),
         ),
-    )
-    fetched = get_reference(conn, reference_id)
-    assert fetched is not None
-    return fetched
+    ).rowcount > 0
+    if inserted:
+        reference = get_reference(conn, reference_id)
+    else:
+        reference = _row(
+            conn.execute(
+                "SELECT * FROM references_ WHERE project_id = ? AND file_hash = ?",
+                (project_id, file_hash),
+            ).fetchone()
+        )
+    assert reference is not None
+    return reference, inserted
 
 
 def get_reference(conn: sqlite3.Connection, reference_id: str) -> dict[str, Any] | None:

@@ -23,8 +23,8 @@ async function pickFiles(count: number): Promise<string[]> {
 
 async function waitForStacks(page: Page) {
   // Default filter is "Pending"; the fixture has no EXIF so every
-  // stack auto-resolves. Switch to "All" to see what was created.
-  await page.getByRole("tab", { name: /^all$/i }).click();
+  // stack auto-resolves. Wait for processing, then view all stacks.
+  await page.getByRole("button", { name: "View All" }).click({ timeout: 30_000 });
   await expect(page.getByRole("list", { name: /stacks/i })).toBeVisible({ timeout: 30_000 });
   const items = page.getByRole("list", { name: /stacks/i }).locator("li");
   await expect(items.first()).toBeVisible({ timeout: 30_000 });
@@ -47,21 +47,14 @@ test("end-to-end: create project, upload, process, book, export", async ({ page 
   const files = await pickFiles(8);
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: /upload photos/i }).click(),
+    page.getByRole("button", { name: "Add photos" }).click(),
   ]);
   await chooser.setFiles(files);
 
   // Wait for the upload summary to appear (matches "Added 8").
   await expect(page.getByText(/added\s+8/i)).toBeVisible({ timeout: 30_000 });
 
-  // Kick off processing.
-  await page.getByRole("button", { name: /process new photos/i }).click();
-  // It returns to its idle label when done.
-  await expect(page.getByRole("button", { name: /^process new photos$/i })).toBeVisible({
-    timeout: 60_000,
-  });
-
-  // Stacks appear.
+  // Stacks appear after automatic processing.
   await waitForStacks(page);
 
   // Visit Themes tab.
