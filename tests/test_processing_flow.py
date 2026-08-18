@@ -11,7 +11,10 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
+from shoebox.pipeline import tier1
 
 
 def _wait_for_job(client: TestClient, job_id: str, timeout: float = 30.0) -> dict:
@@ -346,6 +349,165 @@ def test_deleting_a_page_leaves_the_theme_intact(
     assert [p["id"] for p in pages] == [second["id"]]
     assert pages[0]["order_index"] == 0
     assert client.delete(f"/api/pages/{first['id']}").status_code == 404
+
+
+HOME = (55.6761, 12.5683)
+ACROSS_TOWN = (55.7061, 12.5683)  # ~3.3 km away, past the 2 km default
+THE_HARBOUR = (55.6461, 12.5683)  # ~3.3 km the other way
+
+
+def _stub_exif(
+    monkeypatch: pytest.MonkeyPatch,
+    plan: list[tuple[str, tuple[float, float]]],
+) -> None:
+    """Hand the next uploads the listed capture times and locations.
+
+    The fixture pack carries no EXIF at all, so location behaviour has to
+    be injected. Tier-1 reads the datetime and then the GPS of each file
+    in turn, so one cursor drives both.
+    """
+    cursor = {"i": -1}
+
+    def fake_datetime(image: Image.Image) -> str | None:
+        cursor["i"] += 1
+        return plan[cursor["i"]][0]
+
+    def fake_gps(image: Image.Image) -> tuple[float | None, float | None]:
+        return plan[cursor["i"]][1]
+
+    monkeypatch.setattr(tier1, "_exif_datetime", fake_datetime)
+    monkeypatch.setattr(tier1, "_exif_gps", fake_gps)
+
+
+def test_same_day_photos_at_two_locations_get_two_themes(
+    client: TestClient, fixture_pack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the GPS split used to be undone by theme naming.
+
+    ``propose_themes`` splits a day that moves 3 km, but both proposals
+    are named after the same date, and ``process_project`` used to let
+    one theme absorb every proposal sharing its name — collapsing the
+    split back into a single theme. Each existing theme may now absorb
+    at most one proposal.
+    """
+    project = client.post("/api/projects", json={"name": "Two places"}).json()
+    project_id = project["id"]
+
+    _stub_exif(
+        monkeypatch,
+        [
+            ("2026-04-01T09:00:00", HOME),
+            ("2026-04-01T09:30:00", HOME),
+            ("2026-04-01T10:00:00", ACROSS_TOWN),
+            ("2026-04-01T10:30:00", ACROSS_TOWN),
+        ],
+    )
+    upload = _upload_some(
+        client,
+        project_id,
+        fixture_pack_dir,
+        ["vacation_01.jpg", "vacation_02.jpg", "vacation_03.jpg", "vacation_04.jpg"],
+    )
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    themes = client.get(f"/api/projects/{project_id}/themes").json()
+    assert [t["name"] for t in themes] == ["Apr 1, 2026", "Apr 1, 2026 (2)"], (
+        "The two locations were collapsed back into one theme."
+    )
+
+
+def test_reprocessing_an_already_split_day_leaves_its_themes_untouched(
+    client: TestClient, fixture_pack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consuming a theme per proposal must not cost idempotency.
+
+    Note what this does *not* cover: every stack is already filed by the
+    second run, so no proposals are generated and the naming path is
+    never reached. Duplicate names are the job of
+    ``test_a_theme_absorbed_by_a_proposal_keeps_its_name_reserved``.
+    """
+    project = client.post("/api/projects", json={"name": "Two places twice"}).json()
+    project_id = project["id"]
+
+    _stub_exif(
+        monkeypatch,
+        [
+            ("2026-04-01T09:00:00", HOME),
+            ("2026-04-01T10:00:00", ACROSS_TOWN),
+        ],
+    )
+    upload = _upload_some(
+        client, project_id, fixture_pack_dir, ["vacation_01.jpg", "vacation_02.jpg"]
+    )
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+    first = client.get(f"/api/projects/{project_id}/themes").json()
+
+    reprocess = client.post(f"/api/projects/{project_id}/process").json()
+    assert _wait_for_job(client, reprocess["id"])["status"] == "completed"
+    second = client.get(f"/api/projects/{project_id}/themes").json()
+
+    assert [t["name"] for t in second] == [t["name"] for t in first]
+    assert [t["id"] for t in second] == [t["id"] for t in first]
+
+
+def test_a_theme_absorbed_by_a_proposal_keeps_its_name_reserved(
+    client: TestClient, fixture_pack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absorbing a theme must not release its name back into the pool.
+
+    A theme that absorbs a proposal leaves the mergeable set but still
+    exists under its name. If that name is not reserved, a second
+    proposal for the same day creates a *second* theme called
+    ``Apr 1, 2026`` — ``themes.name`` has no UNIQUE constraint, so the
+    duplicate lands silently and the owner sees the same name twice.
+    """
+    project = client.post("/api/projects", json={"name": "Absorb then split"}).json()
+    project_id = project["id"]
+
+    _stub_exif(monkeypatch, [("2026-04-01T09:00:00", HOME)])
+    first = _upload_some(client, project_id, fixture_pack_dir, ["vacation_01.jpg"])
+    assert _wait_for_job(client, first["job_id"])["status"] == "completed"
+    assert [t["name"] for t in client.get(f"/api/projects/{project_id}/themes").json()] == [
+        "Apr 1, 2026"
+    ]
+
+    # Same day, two further locations: two proposals, one shared base name.
+    _stub_exif(
+        monkeypatch,
+        [
+            ("2026-04-01T11:00:00", ACROSS_TOWN),
+            ("2026-04-01T12:00:00", THE_HARBOUR),
+        ],
+    )
+    second = _upload_some(
+        client, project_id, fixture_pack_dir, ["vacation_05.jpg", "vacation_06.jpg"]
+    )
+    assert _wait_for_job(client, second["job_id"])["status"] == "completed"
+
+    themes = client.get(f"/api/projects/{project_id}/themes").json()
+    names = [t["name"] for t in themes]
+    assert len(set(names)) == len(names), f"two themes share a name: {names}"
+    assert names == ["Apr 1, 2026", "Apr 1, 2026 (2)"]
+
+
+def test_an_owner_named_theme_is_never_absorbed_by_a_proposal(
+    client: TestClient, fixture_pack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An owner's theme only reserves its name; proposals route around it."""
+    project = client.post("/api/projects", json={"name": "Reserved name"}).json()
+    project_id = project["id"]
+    owned = client.post(
+        f"/api/projects/{project_id}/themes", json={"name": "Apr 1, 2026"}
+    ).json()
+
+    _stub_exif(monkeypatch, [("2026-04-01T09:00:00", HOME)])
+    upload = _upload_some(client, project_id, fixture_pack_dir, ["vacation_01.jpg"])
+    assert _wait_for_job(client, upload["job_id"])["status"] == "completed"
+
+    themes = client.get(f"/api/projects/{project_id}/themes").json()
+    assert [t["name"] for t in themes] == ["Apr 1, 2026", "Apr 1, 2026 (2)"]
+    # The owner's theme keeps its name and stays empty.
+    assert client.get(f"/api/themes/{owned['id']}/stacks").json() == []
 
 
 def test_unassigning_a_stack_frees_it_from_its_theme(

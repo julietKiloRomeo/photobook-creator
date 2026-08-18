@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # Tier-2 pipeline tunables.
     burst_max_seconds: int = 30
     theme_partition_hours: int = 6
+    max_location_gap_meters: int = 2000
 
     @property
     def db_path(self) -> Path:

@@ -61,6 +61,7 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
     groups = cluster_stacks(
         references,
         burst_max_seconds=settings.burst_max_seconds,
+        max_location_gap_meters=settings.max_location_gap_meters,
     )
 
     reporter.progress(0.5, "Saving stacks")
@@ -88,8 +89,13 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
                 dao.delete_theme(conn, theme["id"])
 
         # A surviving AI theme for the same day absorbs the new stacks
-        # rather than spawning "Aug 9, 2026 (2)" beside it. Owner-named
-        # themes are off limits, so their names are merely reserved.
+        # rather than spawning "Aug 9, 2026 (2)" beside it — but only one
+        # proposal each, since two proposals mean the pipeline saw two
+        # distinct themes (a day spent in two places) and that decision
+        # stands. Owner-named themes are off limits, so their names are
+        # merely reserved. ``reserved`` holds every name now in use: a
+        # name a theme took this run is never handed out again, whether
+        # that theme was absorbed or freshly created.
         remaining = dao.list_themes(conn, project_id)
         mergeable = {t["name"]: t["id"] for t in remaining if t["ai_proposed"]}
         reserved = {t["name"] for t in remaining if not t["ai_proposed"]}
@@ -97,11 +103,12 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
         proposals = propose_themes(
             unassigned,
             theme_partition_hours=settings.theme_partition_hours,
+            max_location_gap_meters=settings.max_location_gap_meters,
         )
 
         for proposal in proposals:
             base = _theme_base_name(proposal)
-            theme_id = mergeable.get(base)
+            theme_id = mergeable.pop(base, None)
             if theme_id is None:
                 name = _free_name(base, reserved | set(mergeable))
                 theme_id = dao.create_theme(
@@ -110,7 +117,9 @@ def process_project(project_id: str, reporter: JobReporter) -> None:
                     name=name,
                     ai_proposed=True,
                 )["id"]
-                mergeable[name] = theme_id
+            else:
+                name = base
+            reserved.add(name)
             for stack_id in proposal.stack_ids:
                 dao.assign_stack_to_theme(
                     conn,
