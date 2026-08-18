@@ -11,6 +11,7 @@ import logging
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from shoebox import __version__
 from shoebox.api import book as book_router
@@ -20,6 +21,7 @@ from shoebox.api import projects as projects_router
 from shoebox.api import stacks as stacks_router
 from shoebox.api import themes as themes_router
 from shoebox.api import uploads as uploads_router
+from shoebox.config import get_settings
 from shoebox.jobs import get_runner
 from shoebox.logging_config import configure_logging
 from shoebox.pipeline.jobs import process_project
@@ -54,5 +56,9 @@ def create_app() -> FastAPI:
     app.include_router(pages_router.router)
     app.include_router(book_router.router)
     app.include_router(jobs_router.router)
+
+    static_dir = get_settings().static_dir
+    if static_dir is not None:
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
 
     return app

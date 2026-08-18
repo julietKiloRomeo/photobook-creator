@@ -1,0 +1,10 @@
+services:
+  shoebox:
+    build: .
+    image: localhost/shoebox:latest
+    container_name: shoebox
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SHOEBOX_PORT:-8000}:8000"
+    volumes:
+      - "${SHOEBOX_DATA_DIR:-./data}:/data:Z"

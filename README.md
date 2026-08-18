@@ -2,7 +2,7 @@
 
 The family shoebox of photos — everyone reaches in, picks favorites, and builds a book together.
 
-A calm, mobile-first, locally-hosted curation table where a family turns a pile of photos into a print-ready photo book. Deploys to `shoebox.valhalla` on the home LAN.
+A calm, mobile-first, locally-hosted curation table where a family turns a pile of photos into a print-ready photo book. The home-LAN deployment target is `shoebox.loke`.
 
 > **Status: M1 vertical slice complete (single-user).** A solo user can create a project, upload a folder of photos, auto-cluster into stacks and themes, build a draft book, and export structured JSON. Multi-user, voting, and the deploy story land in M2-M4. The previous v1 implementation is preserved verbatim under [`archive/v1/`](./archive/v1/) — see [`archive/v1/ARCHIVE_NOTES.md`](./archive/v1/ARCHIVE_NOTES.md) for what's worth mining.
 >
@@ -19,6 +19,22 @@ cd frontend && npm install && cd ..
 ```
 
 Then open <http://127.0.0.1:5173>.
+
+## Container
+
+The production image builds the Svelte frontend and serves it from FastAPI
+on the same origin as `/api`. It deliberately installs neither development
+dependencies nor the optional `ml` extra.
+
+```bash
+podman build --format docker -t localhost/shoebox:latest .
+SHOEBOX_PORT=8000 podman compose up -d
+curl --fail http://127.0.0.1:8000/api/health
+```
+
+Runtime state is mounted at `/data`; override the host path with
+`SHOEBOX_DATA_DIR=/path/to/data`. Run one container and one API process only:
+background jobs use an in-process queue and SQLite.
 
 ## The three concepts
 
@@ -65,7 +81,7 @@ project.
 - Concurrency: last-write-wins with live refresh.
 - Storage: full-res originals on disk + multi-tier derivatives.
 - Export: JSON + `assets/` folder, vendor-agnostic.
-- Deploy target: Docker on `valhalla` behind Traefik. **(M4)**
+- Deploy target: rootless Podman on `loke`, exposed as `shoebox.loke`. **(M4)**
 
 ## Local checks
 
@@ -86,7 +102,7 @@ cd frontend && npx playwright test
 - **M1** — Vertical slice MVP (single-user, polished): project → upload → process → stacks → themes → book → export. **✅ Complete.**
 - **M2** — Multi-user: join-by-link, identity, roles, presence.
 - **M3** — Voting and Duel mode.
-- **M4** — Polish, Timeline lens, more layouts, deploy to `shoebox.valhalla` via Docker + Traefik. Real OpenCLIP embedder benchmarked on valhalla hardware.
+- **M4** — Polish, Timeline lens, more layouts, and deploy to `shoebox.loke` via rootless Podman. Benchmark the real OpenCLIP embedder on loke's RTX 3060.
 - **M5** — Vendor export helpers (Pixum / Mixbook converters, PDF preview).
 
 See `AGENTS.md` for agent workflow and `step-1.md` for the active step.

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data")
     db_filename: str = "shoebox.db"
+    static_dir: Path | None = None
 
     # Logging.
     log_level: str = "INFO"
