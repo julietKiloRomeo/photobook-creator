@@ -9,6 +9,12 @@ Derivatives at ``thumbs/`` and ``medium/`` next to originals.
 If the same bytes are uploaded twice in the same project, the second
 upload returns the existing reference and is counted as a duplicate.
 The file isn't written a second time.
+
+Large batches arrive as several small requests so one mid-flight
+failure cannot lose the whole batch. Such a client sends
+``?defer_processing=true`` on every chunk and calls
+``POST /api/projects/{id}/process`` once at the end, which keeps a
+163-photo upload at exactly one tier-2 run instead of one per chunk.
 """
 
 from __future__ import annotations
@@ -17,8 +23,9 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from shoebox.api.schemas import Reference, UploadRejection, UploadResult
@@ -73,7 +80,11 @@ def _move_if_missing(source: Path, target: Path, created_paths: list[Path]) -> N
     response_model=UploadResult,
     status_code=201,
 )
-async def upload_files(project_id: str, files: list[UploadFile]) -> UploadResult:
+async def upload_files(
+    project_id: str,
+    files: list[UploadFile],
+    defer_processing: Annotated[bool, Query()] = False,
+) -> UploadResult:
     settings = get_settings()
     with connection() as conn:
         project = dao.get_project(conn, project_id)
@@ -191,7 +202,7 @@ async def upload_files(project_id: str, files: list[UploadFile]) -> UploadResult
                 duplicates += 1
 
     job_id: str | None = None
-    if accepted_refs:
+    if accepted_refs and not defer_processing:
         job = get_runner().enqueue(project_id=project_id, kind="process")
         job_id = job["id"]
 

@@ -36,6 +36,7 @@
     accepted: number;
     duplicates: number;
     rejected: UploadRejection[];
+    failedFiles: number;
   } | null = null;
   let error = "";
   let generation = 0;
@@ -54,11 +55,6 @@
     uploadSummary = null;
     error = "";
     setPhase("idle");
-  }
-
-  function formatBytes(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    return `${(bytes / 1024).toFixed(1)} KB`;
   }
 
   const waitForPoll = () => new Promise((resolve) => setTimeout(resolve, 400));
@@ -94,7 +90,12 @@
     progress = null;
     uploadSummary = null;
     if (files.length === 0) {
-      uploadSummary = { accepted: 0, duplicates: 0, rejected: clientRejections };
+      uploadSummary = {
+        accepted: 0,
+        duplicates: 0,
+        rejected: clientRejections,
+        failedFiles: 0,
+      };
       setPhase("idle");
       return;
     }
@@ -104,10 +105,20 @@
         if (run === generation) progress = nextProgress;
       });
       if (run !== generation) return;
+      // A chunk may have failed after earlier chunks landed: report the
+      // partial outcome instead of discarding the successful prefix.
+      error = result.failure?.message ?? "";
+      const rejected = [...clientRejections, ...result.rejected];
+      const landed = result.accepted + result.duplicates + rejected.length;
+      if (landed === 0) {
+        setPhase("idle");
+        return;
+      }
       uploadSummary = {
         accepted: result.accepted,
         duplicates: result.duplicates,
-        rejected: [...clientRejections, ...result.rejected],
+        rejected,
+        failedFiles: result.failedFiles,
       };
       dispatch("uploaded");
       if (result.job_id === null) {
@@ -176,6 +187,9 @@
       <span>
         Added {uploadSummary.accepted}
         · {uploadSummary.duplicates} duplicate{uploadSummary.duplicates === 1 ? "" : "s"}
+        {#if uploadSummary.failedFiles > 0}
+          · {uploadSummary.failedFiles} file{uploadSummary.failedFiles === 1 ? "" : "s"} not uploaded
+        {/if}
       </span>
       {#if uploadSummary.rejected.length > 0}
         <details>
@@ -198,14 +212,14 @@
     <div class="progress-status">
       <progress
         aria-label="Upload progress"
-        value={Math.round((progress.loaded / progress.total) * 100)}
+        value={Math.round((progress.uploadedFiles / progress.totalFiles) * 100)}
         max="100"
       ></progress>
       <span class="muted">
-        {#if progress.loaded >= progress.total}
+        {#if progress.uploadedFiles >= progress.totalFiles}
           Finishing upload…
         {:else}
-          {Math.round((progress.loaded / progress.total) * 100)}% · {formatBytes(progress.loaded)} of {formatBytes(progress.total)}
+          {Math.floor(progress.uploadedFiles)} of {progress.totalFiles} files uploaded
         {/if}
       </span>
     </div>

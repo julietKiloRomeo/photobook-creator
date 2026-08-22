@@ -46,7 +46,7 @@ async function installFakeUpload(page: Page, configuration: FakeUpload) {
       }
 
       send(body?: Document | XMLHttpRequestBodyInit | null) {
-        if (this.method !== "POST" || !/\/api\/projects\/[^/]+\/uploads$/.test(this.url)) {
+        if (this.method !== "POST" || !/\/api\/projects\/[^/]+\/uploads(\?|$)/.test(this.url)) {
           const request = new NativeXMLHttpRequest();
           request.open(this.method, this.url);
           for (const [name, value] of this.headers) request.setRequestHeader(name, value);
@@ -102,6 +102,25 @@ async function installFakeUpload(page: Page, configuration: FakeUpload) {
   }, configuration);
 }
 
+/** Chunked uploads defer tier-2, so the toolbar's job comes from ``/process``. */
+async function stubProcessJob(page: Page, jobId: string) {
+  await page.route("**/api/projects/*/process", async (route) => {
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: jobId,
+        project_id: "p_fake",
+        kind: "process",
+        status: "queued",
+        progress: 0,
+        message: null,
+        error: null,
+      }),
+    });
+  });
+}
+
 async function createProject(page: Page, name: string) {
   await page.getByPlaceholder("Italy 2026").fill(name);
   await page.getByRole("button", { name: /^create$/i }).click();
@@ -109,6 +128,31 @@ async function createProject(page: Page, name: string) {
   const match = page.url().match(/#\/p\/([^/]+)/);
   expect(match).not.toBeNull();
   return match![1];
+}
+
+function fixturePhotos(count: number) {
+  return Array.from({ length: count }, (_, index) =>
+    path.join(FIXTURE_DIR, `vacation_${String(index + 1).padStart(2, "0")}.jpg`),
+  );
+}
+
+function countUploadAndProcessRequests(page: Page) {
+  const counts = { uploads: 0, processes: 0 };
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const { pathname } = new URL(request.url());
+    if (pathname.endsWith("/uploads")) counts.uploads += 1;
+    if (pathname.endsWith("/process")) counts.processes += 1;
+  });
+  return counts;
+}
+
+async function addPhotos(page: Page, files: string[]) {
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: "Add photos" }).click(),
+  ]);
+  await chooser.setFiles(files);
 }
 
 async function addSyntheticPhoto(page: Page, name = "moment.jpg") {
@@ -127,9 +171,10 @@ test("cancels project activity when client-side navigation reuses the toolbar", 
       duplicates: 0,
       references: [],
       rejected: [],
-      job_id: "j_project_a",
+      job_id: null,
     },
   });
+  await stubProcessJob(page, "j_project_a");
 
   await page.goto("/");
   const suffix = Date.now();
@@ -210,9 +255,10 @@ test("shows upload progress before automatically organizing accepted photos", as
       duplicates: 0,
       references: [],
       rejected: [],
-      job_id: "j_fake_progress",
+      job_id: null,
     },
   });
+  await stubProcessJob(page, "j_fake_progress");
 
   let jobRequests = 0;
   await page.route("**/api/jobs/j_fake_progress", async (route) => {
@@ -249,7 +295,7 @@ test("shows upload progress before automatically organizing accepted photos", as
 
   const uploadProgress = page.getByRole("progressbar", { name: "Upload progress" });
   await expect(uploadProgress).toHaveAttribute("value", "50");
-  await expect(page.getByText(/50%.*50 B of 100 B/i)).toBeVisible();
+  await expect(page.getByText("0 of 1 files uploaded")).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "Photo organizing progress" })).toHaveCount(0);
 
   await page.evaluate(() => (window as unknown as { __advanceUpload(): void }).__advanceUpload());
@@ -282,9 +328,10 @@ test("keeps the upload summary and actions usable when processing fails", async 
       duplicates: 0,
       references: [],
       rejected: [],
-      job_id: "j_fake_failure",
+      job_id: null,
     },
   });
+  await stubProcessJob(page, "j_fake_failure");
 
   let jobRequests = 0;
   await page.route("**/api/jobs/j_fake_failure", async (route) => {
@@ -357,6 +404,59 @@ test("recovers from an upload network error without stale progress", async ({ pa
   await expect(page.getByRole("button", { name: "Add photos" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Add folder" })).toBeEnabled();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
+});
+
+test("uploads a large batch in chunks and organizes it exactly once", async ({ page }) => {
+  await page.goto("/");
+  await createProject(page, `Chunked ${Date.now()}`);
+  const requests = countUploadAndProcessRequests(page);
+
+  await addPhotos(page, fixturePhotos(12));
+
+  await expect(page.getByRole("progressbar", { name: "Upload progress" })).toBeVisible();
+  await expect(page.getByText(/of 12 files uploaded$/)).toBeVisible();
+  await expect(page.getByText("Added 12 · 0 duplicates")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Add photos" })).toBeEnabled({ timeout: 30_000 });
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  expect(requests.uploads).toBe(2);
+  expect(requests.processes).toBe(1);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true);
+});
+
+test("keeps the chunks that landed when a later chunk fails", async ({ page }) => {
+  await page.goto("/");
+  const projectId = await createProject(page, `Partial ${Date.now()}`);
+  const requests = countUploadAndProcessRequests(page);
+  await page.route("**/api/projects/*/uploads*", async (route) => {
+    if (requests.uploads === 2) {
+      await route.fulfill({
+        status: 503,
+        contentType: "text/plain",
+        body: "Upload service unavailable",
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await addPhotos(page, fixturePhotos(12));
+
+  await expect(page.getByRole("alert")).toHaveText("Upload service unavailable", {
+    timeout: 30_000,
+  });
+  await expect(page.getByText("Added 10 · 0 duplicates · 2 files not uploaded")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add photos" })).toBeEnabled({ timeout: 30_000 });
+
+  expect(requests.uploads).toBe(2);
+  expect(requests.processes).toBe(1);
+  const project = await page.request.get(`/api/projects/${projectId}`);
+  expect((await project.json()).photo_count).toBe(10);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true);
 });
 
 test("uploads a nested folder and explains every skipped file", async ({ page }) => {
