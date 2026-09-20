@@ -66,8 +66,16 @@ export type UploadRejection = {
 };
 
 export type UploadProgress = {
-  loaded: number;
-  total: number;
+  /** Files uploaded so far. Fractional while a chunk is in flight. */
+  uploadedFiles: number;
+  totalFiles: number;
+};
+
+export type ChunkedUploadResult = UploadResult & {
+  /** Files from the failed chunk onwards, which never reached the server. */
+  failedFiles: number;
+  /** Why the batch stopped early; null when every chunk landed. */
+  failure: Error | null;
 };
 
 export type Stack = {
@@ -114,6 +122,110 @@ export type Job = {
   error: string | null;
 };
 
+// ----- Uploads. -----
+
+/**
+ * Files per upload request.
+ *
+ * A single request for hundreds of photos is all-or-nothing: one
+ * mid-flight failure loses the whole batch. Small sequential chunks
+ * keep everything already sent committed on the server.
+ */
+export const UPLOAD_CHUNK_SIZE = 10;
+
+const processProject = (projectId: string) =>
+  request<Job>(`/api/projects/${projectId}/process`, { method: "POST" });
+
+/** POST one chunk. ``onProgress`` reports the fraction of bytes sent. */
+function uploadChunk(
+  projectId: string,
+  files: File[],
+  onProgress: (fraction: number) => void,
+): Promise<UploadResult> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  return new Promise<UploadResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    // Every chunk defers tier-2 so the batch causes one processing run.
+    xhr.open("POST", `/api/projects/${projectId}/uploads?defer_processing=true`);
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(event.loaded / event.total);
+      }
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new ApiError(xhr.status, xhr.responseText || xhr.statusText));
+        return;
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText) as UploadResult);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    xhr.addEventListener("error", () => reject(new TypeError("Failed to fetch")));
+    xhr.addEventListener("abort", () =>
+      reject(new DOMException("The operation was aborted.", "AbortError")),
+    );
+    xhr.send(form);
+  });
+}
+
+/**
+ * Upload ``files`` as sequential chunks, then organize once.
+ *
+ * A failing chunk stops the batch but keeps every earlier chunk: the
+ * outcome is reported as data (``failure`` + ``failedFiles``) rather
+ * than thrown, so the caller can show what landed and let jkr retry
+ * only the remainder.
+ */
+async function uploadFiles(
+  projectId: string,
+  files: File[],
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<ChunkedUploadResult> {
+  const totalFiles = files.length;
+  const result: ChunkedUploadResult = {
+    accepted: 0,
+    duplicates: 0,
+    references: [],
+    rejected: [],
+    job_id: null,
+    failedFiles: 0,
+    failure: null,
+  };
+  let uploadedFiles = 0;
+
+  for (let start = 0; start < totalFiles; start += UPLOAD_CHUNK_SIZE) {
+    const chunk = files.slice(start, start + UPLOAD_CHUNK_SIZE);
+    try {
+      const chunkResult = await uploadChunk(projectId, chunk, (fraction) =>
+        onProgress?.({
+          uploadedFiles: uploadedFiles + chunk.length * fraction,
+          totalFiles,
+        }),
+      );
+      result.accepted += chunkResult.accepted;
+      result.duplicates += chunkResult.duplicates;
+      result.references.push(...chunkResult.references);
+      result.rejected.push(...chunkResult.rejected);
+      uploadedFiles += chunk.length;
+      onProgress?.({ uploadedFiles, totalFiles });
+    } catch (error) {
+      result.failure = error as Error;
+      result.failedFiles = totalFiles - uploadedFiles;
+      break;
+    }
+  }
+
+  if (result.accepted > 0) {
+    result.job_id = (await processProject(projectId)).id;
+  }
+  return result;
+}
+
 // ----- Endpoints. -----
 
 export const api = {
@@ -128,48 +240,14 @@ export const api = {
     request<void>(`/api/projects/${id}`, { method: "DELETE" }),
 
   // Uploads
-  uploadFiles: (
-    projectId: string,
-    files: File[],
-    onProgress?: (progress: UploadProgress) => void,
-  ) => {
-    const form = new FormData();
-    for (const f of files) form.append("files", f);
-    return new Promise<UploadResult>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/projects/${projectId}/uploads`);
-      xhr.setRequestHeader("Accept", "application/json");
-      xhr.upload.addEventListener("progress", (event) => {
-        if (event.lengthComputable && event.total > 0) {
-          onProgress?.({ loaded: event.loaded, total: event.total });
-        }
-      });
-      xhr.addEventListener("load", () => {
-        if (xhr.status < 200 || xhr.status >= 300) {
-          reject(new ApiError(xhr.status, xhr.responseText || xhr.statusText));
-          return;
-        }
-        try {
-          resolve(JSON.parse(xhr.responseText) as UploadResult);
-        } catch (error) {
-          reject(error);
-        }
-      });
-      xhr.addEventListener("error", () => reject(new TypeError("Failed to fetch")));
-      xhr.addEventListener("abort", () =>
-        reject(new DOMException("The operation was aborted.", "AbortError")),
-      );
-      xhr.send(form);
-    });
-  },
+  uploadFiles,
   thumbUrl: (projectId: string, referenceId: string) =>
     `/api/projects/${projectId}/references/${referenceId}/thumb`,
   mediumUrl: (projectId: string, referenceId: string) =>
     `/api/projects/${projectId}/references/${referenceId}/medium`,
 
   // Processing
-  process: (projectId: string) =>
-    request<Job>(`/api/projects/${projectId}/process`, { method: "POST" }),
+  process: processProject,
   getJob: (jobId: string) => request<Job>(`/api/jobs/${jobId}`),
 
   // Stacks

@@ -200,6 +200,49 @@ def test_unique_photo_batch_enqueues_one_processing_job(
     assert enqueue_calls == [(project["id"], "process")]
 
 
+def test_chunked_upload_defers_processing_until_the_final_chunk(
+    client: TestClient, fixture_pack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chunking client owns when tier-2 runs.
+
+    ``defer_processing`` lets every chunk but the last land without
+    queueing a full re-clustering, so a 163-photo upload still produces
+    exactly one processing job.
+    """
+    project = _create_project(client)
+    enqueue_calls: list[tuple[str, str]] = []
+
+    def fake_enqueue(*, project_id: str, kind: str) -> dict:
+        enqueue_calls.append((project_id, kind))
+        return {"id": "j_fake"}
+
+    monkeypatch.setattr(get_runner(), "enqueue", fake_enqueue)
+
+    def upload(photo_name: str, query: str) -> dict:
+        photo = fixture_pack_dir / photo_name
+        response = client.post(
+            f"/api/projects/{project['id']}/uploads{query}",
+            files=[("files", (photo.name, photo.read_bytes(), "image/jpeg"))],
+        )
+        assert response.status_code == 201
+        return response.json()
+
+    deferred = upload("vacation_01.jpg", "?defer_processing=true")
+    assert deferred["accepted"] == 1
+    assert deferred["job_id"] is None
+    assert enqueue_calls == []
+
+    explicitly_not_deferred = upload("vacation_02.jpg", "?defer_processing=false")
+    assert explicitly_not_deferred["accepted"] == 1
+    assert explicitly_not_deferred["job_id"] == "j_fake"
+    assert enqueue_calls == [(project["id"], "process")]
+
+    absent_flag = upload("vacation_03.jpg", "")
+    assert absent_flag["accepted"] == 1
+    assert absent_flag["job_id"] == "j_fake"
+    assert enqueue_calls == [(project["id"], "process")] * 2
+
+
 def test_duplicate_only_upload_does_not_enqueue_processing(
     client: TestClient, fixture_pack_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
