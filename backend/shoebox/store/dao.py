@@ -76,6 +76,61 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
     return cur.rowcount > 0
 
 
+# ----------------------------------------------------------------- sources --
+
+def create_source(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    kind: str,
+    expected_file_count: int,
+) -> dict[str, Any]:
+    """Record an upload batch so its photos can be traced back to it."""
+    source_id = _new_id("src")
+    conn.execute(
+        """
+        INSERT INTO sources (id, project_id, kind, expected_file_count, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (source_id, project_id, kind, expected_file_count, _now_iso()),
+    )
+    fetched = get_source(conn, source_id)
+    assert fetched is not None
+    return fetched
+
+
+def get_source(conn: sqlite3.Connection, source_id: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        """
+        SELECT s.*,
+               (SELECT COUNT(*) FROM references_ AS r WHERE r.source_id = s.id) AS reference_count
+        FROM sources AS s
+        WHERE s.id = ?
+        """,
+        (source_id,),
+    )
+    return _row(cur.fetchone())
+
+
+def list_sources(conn: sqlite3.Connection, project_id: str) -> list[dict[str, Any]]:
+    """Batches newest first.
+
+    ``created_at`` has second resolution, so insertion order breaks ties
+    between batches started in the same second.
+    """
+    cur = conn.execute(
+        """
+        SELECT s.*,
+               (SELECT COUNT(*) FROM references_ AS r WHERE r.source_id = s.id) AS reference_count
+        FROM sources AS s
+        WHERE s.project_id = ?
+        ORDER BY s.created_at DESC, s.rowid DESC
+        """,
+        (project_id,),
+    )
+    return _rows(cur.fetchall())
+
+
 # -------------------------------------------------------------- references --
 
 def upsert_reference(
@@ -91,6 +146,7 @@ def upsert_reference(
     width: int | None = None,
     height: int | None = None,
     uploader_member_id: str | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     """Insert a reference if its (project_id, file_hash) is new, else return existing.
 
@@ -109,6 +165,7 @@ def upsert_reference(
         width=width,
         height=height,
         uploader_member_id=uploader_member_id,
+        source_id=source_id,
     )
     return reference
 
@@ -126,16 +183,22 @@ def insert_reference_if_new(
     width: int | None = None,
     height: int | None = None,
     uploader_member_id: str | None = None,
+    source_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Atomically insert or return a project reference and creation status."""
+    """Atomically insert or return a project reference and creation status.
+
+    A duplicate keeps the ``source_id`` it was first stamped with: the
+    photo arrived in that batch, and arriving again does not change it.
+    """
 
     reference_id = _new_id("r")
     inserted = conn.execute(
         """
         INSERT INTO references_ (
             id, project_id, original_path, file_hash, phash, captured_at,
-            gps_lat, gps_lon, width, height, uploader_member_id, uploaded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            gps_lat, gps_lon, width, height, uploader_member_id, uploaded_at,
+            source_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, file_hash) DO NOTHING
         """,
         (
@@ -151,6 +214,7 @@ def insert_reference_if_new(
             height,
             uploader_member_id,
             _now_iso(),
+            source_id,
         ),
     ).rowcount > 0
     if inserted:

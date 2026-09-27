@@ -15,6 +15,8 @@ failure cannot lose the whole batch. Such a client sends
 ``?defer_processing=true`` on every chunk and calls
 ``POST /api/projects/{id}/process`` once at the end, which keeps a
 163-photo upload at exactly one tier-2 run instead of one per chunk.
+Such a client also sends ``?source_id=...`` so every chunk is stamped
+with the one batch it belongs to.
 """
 
 from __future__ import annotations
@@ -84,12 +86,17 @@ async def upload_files(
     project_id: str,
     files: list[UploadFile],
     defer_processing: Annotated[bool, Query()] = False,
+    source_id: Annotated[str | None, Query()] = None,
 ) -> UploadResult:
     settings = get_settings()
     with connection() as conn:
         project = dao.get_project(conn, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
+        if source_id is not None:
+            source = dao.get_source(conn, source_id)
+            if source is None or source["project_id"] != project_id:
+                raise HTTPException(status_code=404, detail="Source not found")
 
     project_dir = settings.project_dir(project_id)
     originals_dir = settings.project_originals_dir(project_id)
@@ -184,6 +191,7 @@ async def upload_files(
                             gps_lon=result.gps_lon,
                             width=result.width,
                             height=result.height,
+                            source_id=source_id,
                         )
                         if created:
                             for staged_path, final_path in artifacts:

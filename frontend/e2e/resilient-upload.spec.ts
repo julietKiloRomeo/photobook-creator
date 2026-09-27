@@ -408,7 +408,7 @@ test("recovers from an upload network error without stale progress", async ({ pa
 
 test("uploads a large batch in chunks and organizes it exactly once", async ({ page }) => {
   await page.goto("/");
-  await createProject(page, `Chunked ${Date.now()}`);
+  const projectId = await createProject(page, `Chunked ${Date.now()}`);
   const requests = countUploadAndProcessRequests(page);
 
   await addPhotos(page, fixturePhotos(12));
@@ -421,6 +421,13 @@ test("uploads a large batch in chunks and organizes it exactly once", async ({ p
 
   expect(requests.uploads).toBe(2);
   expect(requests.processes).toBe(1);
+
+  // Several requests, one batch: every photo traces back to one source.
+  const sources = await (await page.request.get(`/api/projects/${projectId}/sources`)).json();
+  expect(sources).toHaveLength(1);
+  expect(sources[0].expected_file_count).toBe(12);
+  expect(sources[0].reference_count).toBe(12);
+
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
   ).toBe(true);
@@ -454,6 +461,12 @@ test("keeps the chunks that landed when a later chunk fails", async ({ page }) =
   expect(requests.processes).toBe(1);
   const project = await page.request.get(`/api/projects/${projectId}`);
   expect((await project.json()).photo_count).toBe(10);
+  // The half-finished batch is still one batch, and it records that it
+  // expected more than it got — which is what makes a retry possible.
+  const sources = await (await page.request.get(`/api/projects/${projectId}/sources`)).json();
+  expect(sources).toHaveLength(1);
+  expect(sources[0].expected_file_count).toBe(12);
+  expect(sources[0].reference_count).toBe(10);
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
   ).toBe(true);

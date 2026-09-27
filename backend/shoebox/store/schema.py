@@ -5,9 +5,13 @@ by ``project_id`` rather than per-project DBs to keep export and
 multi-project listing cheap.
 
 The schema lives here as one SQL string so it's reviewable as a single
-artifact. Migrations are out of scope in M1; the schema is created idempotently
-on startup. When we need to evolve it, we'll introduce a tiny
-versioned-migrations module.
+artifact, created idempotently on startup. ``CREATE TABLE IF NOT EXISTS``
+only covers *new* tables, so a column added to an existing table also
+needs an entry in ``shoebox.store.migrations``.
+
+This script runs *before* those migrations, so nothing here may depend
+on a column a migration adds — an index over such a column would fail
+on exactly the databases the migration exists to rescue.
 
 Members and votes tables are defined now (unused until M2/M3) so the
 foreign keys on ``references_`` and ``stacks`` don't have to be added
@@ -41,6 +45,16 @@ CREATE TABLE IF NOT EXISTS members (
 
 CREATE INDEX IF NOT EXISTS idx_members_project ON members(project_id);
 
+CREATE TABLE IF NOT EXISTS sources (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind                TEXT NOT NULL,
+    expected_file_count INTEGER NOT NULL,
+    created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_project ON sources(project_id, created_at);
+
 CREATE TABLE IF NOT EXISTS references_ (
     id              TEXT PRIMARY KEY,
     project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -54,6 +68,10 @@ CREATE TABLE IF NOT EXISTS references_ (
     height          INTEGER,
     uploader_member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
     uploaded_at     TEXT NOT NULL,
+    -- Which upload batch this photo arrived in. NULL for every photo
+    -- that predates batch provenance, and for uploads made without one.
+    -- Appended last so a migrated database matches a fresh one.
+    source_id       TEXT REFERENCES sources(id) ON DELETE SET NULL,
     UNIQUE(project_id, file_hash)
 );
 

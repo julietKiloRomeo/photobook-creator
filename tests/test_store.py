@@ -275,6 +275,55 @@ def test_sync_stacks_clears_a_pick_that_left_the_stack(conn) -> None:
     assert kept["status"] == "pending"
 
 
+def test_deleting_an_upload_batch_leaves_its_photos_alive(conn) -> None:
+    """Provenance is a label on a photo, never the photo's owner.
+
+    Forgetting which batch a photo came in must never cost the photo,
+    so the reference survives with an empty ``source_id``.
+    """
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    project = dao.create_project(conn, name="Batch")
+    source = dao.create_source(
+        conn, project_id=project["id"], kind="upload", expected_file_count=1
+    )
+    ref = dao.upsert_reference(
+        conn,
+        project_id=project["id"],
+        original_path="/b.jpg",
+        file_hash="b",
+        source_id=source["id"],
+    )
+
+    conn.execute("DELETE FROM sources WHERE id = ?", (source["id"],))
+
+    kept = dao.get_reference(conn, ref["id"])
+    assert kept is not None
+    assert kept["source_id"] is None
+
+
+def test_an_upload_batch_counts_the_photos_that_arrived_in_it(conn) -> None:
+    project = dao.create_project(conn, name="Counted")
+    source = dao.create_source(
+        conn, project_id=project["id"], kind="upload", expected_file_count=3
+    )
+    for index in range(2):
+        dao.upsert_reference(
+            conn,
+            project_id=project["id"],
+            original_path=f"/c{index}.jpg",
+            file_hash=f"c{index}",
+            source_id=source["id"],
+        )
+    dao.upsert_reference(
+        conn, project_id=project["id"], original_path="/loose.jpg", file_hash="loose"
+    )
+
+    fetched = dao.get_source(conn, source["id"])
+    assert fetched is not None
+    assert fetched["expected_file_count"] == 3
+    assert fetched["reference_count"] == 2
+
+
 def test_deleting_a_theme_leaves_its_stacks_alive(conn) -> None:
     project = dao.create_project(conn, name="Delete theme")
     ref = dao.upsert_reference(

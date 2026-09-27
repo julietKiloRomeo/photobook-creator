@@ -18,6 +18,7 @@ from shoebox.api import book as book_router
 from shoebox.api import jobs as jobs_router
 from shoebox.api import pages as pages_router
 from shoebox.api import projects as projects_router
+from shoebox.api import sources as sources_router
 from shoebox.api import stacks as stacks_router
 from shoebox.api import themes as themes_router
 from shoebox.api import uploads as uploads_router
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     app.include_router(projects_router.router)
+    app.include_router(sources_router.router)
     app.include_router(uploads_router.router)
     app.include_router(stacks_router.router)
     app.include_router(themes_router.router)

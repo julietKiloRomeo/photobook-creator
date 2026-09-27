@@ -36,6 +36,12 @@ async function createProjectWithPhotos(page: Page, count: number) {
   await expect(page.getByText(new RegExp(`added\\s+${count}`, "i"))).toBeVisible({
     timeout: 30_000,
   });
+  // Organizing finishes by refetching every screen, which discards any
+  // curation in flight. Wait for the toolbar to go idle — "Add photos"
+  // is disabled until then — so the curation below races nothing.
+  await expect(page.getByRole("button", { name: "Add photos" })).toBeEnabled({
+    timeout: 30_000,
+  });
   await page.getByRole("button", { name: "Themes", exact: true }).click();
 }
 

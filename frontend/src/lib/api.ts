@@ -52,6 +52,16 @@ export type Reference = {
   uploaded_at: string;
 };
 
+/** One upload batch. ``reference_count`` is derived by the backend. */
+export type Source = {
+  id: string;
+  project_id: string;
+  kind: string;
+  expected_file_count: number;
+  created_at: string;
+  reference_count: number;
+};
+
 export type UploadResult = {
   accepted: number;
   duplicates: number;
@@ -136,9 +146,16 @@ export const UPLOAD_CHUNK_SIZE = 10;
 const processProject = (projectId: string) =>
   request<Job>(`/api/projects/${projectId}/process`, { method: "POST" });
 
+const createSource = (projectId: string, expectedFileCount: number) =>
+  request<Source>(`/api/projects/${projectId}/sources`, {
+    method: "POST",
+    body: JSON.stringify({ expected_file_count: expectedFileCount }),
+  });
+
 /** POST one chunk. ``onProgress`` reports the fraction of bytes sent. */
 function uploadChunk(
   projectId: string,
+  sourceId: string,
   files: File[],
   onProgress: (fraction: number) => void,
 ): Promise<UploadResult> {
@@ -146,8 +163,12 @@ function uploadChunk(
   for (const f of files) form.append("files", f);
   return new Promise<UploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    // Every chunk defers tier-2 so the batch causes one processing run.
-    xhr.open("POST", `/api/projects/${projectId}/uploads?defer_processing=true`);
+    // Every chunk defers tier-2 so the batch causes one processing run,
+    // and carries the same source so the batch stays one batch.
+    xhr.open(
+      "POST",
+      `/api/projects/${projectId}/uploads?defer_processing=true&source_id=${sourceId}`,
+    );
     xhr.setRequestHeader("Accept", "application/json");
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable && event.total > 0) {
@@ -180,6 +201,9 @@ function uploadChunk(
  * outcome is reported as data (``failure`` + ``failedFiles``) rather
  * than thrown, so the caller can show what landed and let jkr retry
  * only the remainder.
+ *
+ * The batch gets one source, created up front and stamped on every
+ * chunk, so a partial batch is still recognisable as one import.
  */
 async function uploadFiles(
   projectId: string,
@@ -187,6 +211,7 @@ async function uploadFiles(
   onProgress?: (progress: UploadProgress) => void,
 ): Promise<ChunkedUploadResult> {
   const totalFiles = files.length;
+  const source = await createSource(projectId, totalFiles);
   const result: ChunkedUploadResult = {
     accepted: 0,
     duplicates: 0,
@@ -201,7 +226,7 @@ async function uploadFiles(
   for (let start = 0; start < totalFiles; start += UPLOAD_CHUNK_SIZE) {
     const chunk = files.slice(start, start + UPLOAD_CHUNK_SIZE);
     try {
-      const chunkResult = await uploadChunk(projectId, chunk, (fraction) =>
+      const chunkResult = await uploadChunk(projectId, source.id, chunk, (fraction) =>
         onProgress?.({
           uploadedFiles: uploadedFiles + chunk.length * fraction,
           totalFiles,

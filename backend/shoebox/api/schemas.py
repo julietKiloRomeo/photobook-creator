@@ -23,6 +23,21 @@ class Project(BaseModel):
     photo_count: int
 
 
+class SourceCreate(BaseModel):
+    expected_file_count: int = Field(ge=0)
+
+
+class Source(BaseModel):
+    """One upload batch. ``reference_count`` is derived, never stored."""
+
+    id: str
+    project_id: str
+    kind: str
+    expected_file_count: int
+    created_at: str
+    reference_count: int
+
+
 class Reference(BaseModel):
     id: str
     project_id: str

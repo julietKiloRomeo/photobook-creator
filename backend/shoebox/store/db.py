@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from shoebox.config import get_settings
+from shoebox.store.migrations import apply_migrations
 from shoebox.store.schema import SCHEMA_SQL
 
 
@@ -25,11 +26,12 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def initialise(db_path: Path | None = None) -> None:
-    """Create tables idempotently. Safe to call on every startup."""
+    """Create tables, then upgrade existing ones. Safe on every startup."""
     path = db_path or get_settings().db_path
     conn = _connect(path)
     try:
         conn.executescript(SCHEMA_SQL)
+        apply_migrations(conn)
     finally:
         conn.close()
 
